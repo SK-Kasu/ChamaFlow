@@ -1,0 +1,26 @@
+{
+  "name": "chamaflow-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Express API for the ChamaFlow prototype",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "migrate": "node migrate.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
