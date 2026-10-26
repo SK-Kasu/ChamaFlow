@@ -14,9 +14,7 @@ A prototype workspace for Kenyan savings groups (chamas), built with React, Vite
 
 Member participation profiles are based on recorded contribution history. They are not credit scores, lending decisions, or financial recommendations.
 
-## Hosting and deployment
 
-GitHub is suitable for hosting the source code and its history. It is not, by itself, a host for this full application:
 
 - The backend is an Express API and needs a Node.js application host.
 - The backend needs a PostgreSQL database.
@@ -83,19 +81,7 @@ npm run build
 - `/api/groups/:groupId/contributions` — contribution history and sandbox payment operations.
 - `/api/admin` — administrator-scoped operations.
 
-The Daraja callback endpoint does not trust callback data as confirmation; the backend queries the sandbox provider before recording a successful contribution. See [the payment flow specification](./docs/payment-flow-specification.md) for implementation limits and outstanding launch gates.
 
-## Before production
 
-Production financial use is not supported. Live collections, provider reconciliation operations, live disbursements, payout automation, group-specific provider account configuration, and several provider/compliance launch checks remain incomplete. Do not interpret a manual or sandbox ledger entry as evidence of a real payment.
 
-## Reference sources
 
-- [GitHub: About README files](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes) — purpose and common README content.
-- [GitHub: Secret scanning](https://docs.github.com/en/code-security/concepts/secret-security/secret-scanning) — exposed credentials and remediation.
-- [GitHub Pages: What is GitHub Pages?](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages) — static-site hosting scope.
-- [Node.js release schedule](https://nodejs.org/en/about/previous-releases) — supported and end-of-life Node.js releases.
-- [PostgreSQL versioning policy](https://www.postgresql.org/support/versioning/) — supported major versions and end-of-life dates.
-- [Vite 8 package requirements](https://www.npmjs.com/package/vite) — Node.js engine requirement.
-
-No `LICENSE` file is currently included. Add a license if you intend to grant others permission to use, modify, or redistribute this project.
