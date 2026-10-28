@@ -116,6 +116,57 @@ router.get('/me', requireAuth, (req, res) => {
   res.json({ user: { id: req.user.id, fullName: req.user.fullName, email: req.user.email } });
 });
 
+router.patch('/me', requireAuth, async (req, res, next) => {
+  const fullName = typeof req.body.fullName === 'string' ? req.body.fullName.trim() : '';
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  if (fullName.length < 2 || fullName.length > 100) {
+    return res.status(400).json({ error: 'Name must be between 2 and 100 characters.' });
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    return res.status(400).json({ error: 'Enter a valid email address.' });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `UPDATE users SET full_name = $2, email = $3, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, full_name AS "fullName", email`,
+      [req.user.id, fullName, email],
+    );
+    res.json({ user: rows[0] });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'An account with this email already exists.' });
+    next(error);
+  }
+});
+
+router.patch('/password', requireAuth, async (req, res, next) => {
+  const currentPassword = typeof req.body.currentPassword === 'string' ? req.body.currentPassword : '';
+  const newPassword = typeof req.body.newPassword === 'string' ? req.body.newPassword : '';
+  if (currentPassword.length > 128 || newPassword.length < 12 || newPassword.length > 128) {
+    return res.status(400).json({ error: 'Enter your current password and a new password of 12 to 128 characters.' });
+  }
+
+  try {
+    const { rows } = await pool.query('SELECT password_hash AS "passwordHash" FROM users WHERE id = $1', [req.user.id]);
+    if (!rows[0] || !await bcrypt.compare(currentPassword, rows[0].passwordHash)) {
+      return res.status(400).json({ error: 'Current password is incorrect.' });
+    }
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+    await pool.query(
+      `UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1`,
+      [req.user.id, passwordHash],
+    );
+    await pool.query(
+      'UPDATE sessions SET revoked_at = NOW() WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL',
+      [req.user.id, req.sessionId],
+    );
+    res.json({ message: 'Password updated. Other active sessions have been signed out.' });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/logout', requireAuth, async (req, res, next) => {
   try {
     await pool.query('UPDATE sessions SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL', [req.sessionId]);

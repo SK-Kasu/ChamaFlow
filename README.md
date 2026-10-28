@@ -8,6 +8,8 @@ A prototype workspace for Kenyan savings groups (chamas), built with React, Vite
 
 - Chama dashboards for members, contribution progress, activity, and payout schedules.
 - Contribution history and analytics, with demo recording and Daraja sandbox STK Push attempts.
+- Database-backed member registers with contact details and automatic first-cycle contribution records.
+- Account profile and password management for signed-in users.
 - A sandbox payment ledger that records provider-verified test collections.
 - Platform and SACCO administration tools for organizations, groups, administrators, and audit events.
 - Sample-data demo mode when the API is unavailable.
@@ -77,11 +79,11 @@ npm run build
 
 - `GET /api/health` — API/database readiness.
 - `POST /api/auth/register` and `POST /api/auth/login` — account access.
+- `PATCH /api/auth/me` and `PATCH /api/auth/password` — update account details and password.
 - `/api/groups` — authenticated chama listing and creation.
+- `GET` and `POST /api/groups/:groupId/members` — view or add members with contact details; adding a member also creates their current-cycle contribution and payout slot.
 - `/api/groups/:groupId/contributions` — contribution history and sandbox payment operations.
 - `/api/admin` — administrator-scoped operations.
-
-
 
 
 

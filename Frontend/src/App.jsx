@@ -22,10 +22,12 @@ import {
   Plus,
   Search,
   ShieldCheck,
+  Settings,
   Sparkles,
   Landmark,
   Users,
   Wallet,
+  Trash2,
   X,
 } from 'lucide-react';
 
@@ -61,13 +63,20 @@ function createDemoData({
     'Grace Wambui',
     'Peter Kamau',
   ];
-  const members = names.map((name, index) => ({
+  const members = names.map((member, index) => {
+    const details = typeof member === 'string' ? { name: member } : member;
+    return {
     id: index + 1,
-    name,
+    name: details.name,
     role: index === 0 ? 'Administrator' : groupId === 'demo-default' && index === 1 ? 'Treasurer' : 'Member',
+    registrationNumber: details.registrationNumber || '',
+    phoneNumber: details.phoneNumber || '',
+    location: details.location || '',
+    email: details.email || '',
     trustScore: [96, 91, 88, 84, 93, 78, 89, 86][index],
     paid: groupId === 'demo-default' && ![3, 6].includes(index),
-  }));
+    };
+  });
   const slots = members.map((member, index) => {
     const payoutDate = new Date(`${startDate}T12:00:00`);
     if (frequency === 'monthly') {
@@ -171,7 +180,7 @@ function Brand() {
   );
 }
 
-function Sidebar({ activePage, setActivePage, open, onClose, onManageGroups, group, groupCount, adminAccess, userName, onInfo }) {
+function Sidebar({ activePage, setActivePage, open, onClose, onManageGroups, group, groupCount, adminAccess, userName, userEmail, onAccountSettings }) {
   const visibleNavigation = [
     ...navigation,
     ...(adminAccess?.platformAdmin || adminAccess?.saccoAdmin ? adminNavigation : []),
@@ -283,10 +292,10 @@ function Sidebar({ activePage, setActivePage, open, onClose, onManageGroups, gro
           </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-xs font-bold text-[#26382e]">{userName}</p>
-            <p className="text-[11px] text-[#8b968e]">{userName === 'Demo guest' ? 'Demo session' : 'ChamaFlow account'}</p>
+            <p className="truncate text-[10px] text-[#8b968e]">{userEmail || (userName === 'Demo guest' ? 'Demo session' : 'ChamaFlow account')}</p>
           </div>
-          <button aria-label="Open account details" onClick={() => onInfo('Account details', 'Account settings and account management will be available in a later version.')} className="text-[#89938c]">
-            <ChevronDown size={16} />
+          <button aria-label="Open account settings" onClick={onAccountSettings} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-[#89938c] transition hover:bg-[#f3f6f1] hover:text-[#476b50]">
+            <Settings size={16} />
           </button>
         </div>
       </aside>
@@ -745,6 +754,125 @@ function InfoModal({ dialog, onClose }) {
   );
 }
 
+function AccountSettingsPage({ user, accessToken, demoMode, onUserUpdated, onSignOut }) {
+  const [fullName, setFullName] = useState(user?.fullName || '');
+  const [email, setEmail] = useState(user?.email || '');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [profileStatus, setProfileStatus] = useState('');
+  const [passwordStatus, setPasswordStatus] = useState('');
+  const [profileError, setProfileError] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
+
+  async function saveProfile(event) {
+    event.preventDefault();
+    setSavingProfile(true);
+    setProfileError('');
+    setProfileStatus('');
+    try {
+      const response = await fetch(`${API_URL}/auth/me`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ fullName, email }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not update your account details.');
+      onUserUpdated(payload.user);
+      setFullName(payload.user.fullName);
+      setEmail(payload.user.email);
+      setProfileStatus('Your account details have been saved.');
+    } catch (saveError) {
+      setProfileError(saveError.message || 'Could not update your account details.');
+    } finally {
+      setSavingProfile(false);
+    }
+  }
+
+  async function savePassword(event) {
+    event.preventDefault();
+    setSavingPassword(true);
+    setPasswordError('');
+    setPasswordStatus('');
+    try {
+      const response = await fetch(`${API_URL}/auth/password`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not update your password.');
+      setCurrentPassword('');
+      setNewPassword('');
+      setPasswordStatus(payload.message || 'Password updated.');
+    } catch (saveError) {
+      setPasswordError(saveError.message || 'Could not update your password.');
+    } finally {
+      setSavingPassword(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <p className="text-xs font-semibold text-[#88948b]">Your account</p>
+      <h1 className="display-font mt-2 text-[27px] font-extrabold tracking-[-0.06em] text-[#20362a] sm:text-[32px]">Account settings</h1>
+      <p className="mt-1 text-sm text-[#849087]">Manage your profile, password, and active sign-in.</p>
+      {demoMode ? (
+        <p className="mt-5 rounded-xl border border-[#e8e4d7] bg-[#fbf9f2] p-4 text-xs leading-5 text-[#81734f]">Account changes are available after signing in. Demo data and settings are temporary and are not saved to the database.</p>
+      ) : (
+        <>
+          <section className="mt-6 rounded-2xl border border-[#e9ece5] bg-white p-4 sm:p-6">
+            <h2 className="text-sm font-bold text-[#34483a]">Profile details</h2>
+            <p className="mt-1 text-xs text-[#87928a]">Update the name and email address associated with your account.</p>
+            <form onSubmit={saveProfile} className="mt-4 grid gap-4 sm:grid-cols-2">
+              <label className="text-xs font-semibold text-[#526258]">
+                Full name
+                <input required minLength={2} maxLength={100} autoComplete="name" value={fullName} onChange={(event) => setFullName(event.target.value)} className="mt-1.5 h-11 w-full rounded-xl border border-[#e4e9e1] px-3 text-sm font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+              </label>
+              <label className="text-xs font-semibold text-[#526258]">
+                Email address
+                <input required type="email" maxLength={254} autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} className="mt-1.5 h-11 w-full rounded-xl border border-[#e4e9e1] px-3 text-sm font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+              </label>
+              <div className="sm:col-span-2">
+                {profileError && <p role="alert" className="mb-3 rounded-lg bg-[#fbefec] px-3 py-2 text-xs text-[#a65347]">{profileError}</p>}
+                {profileStatus && <p role="status" className="mb-3 rounded-lg bg-[#edf4ee] px-3 py-2 text-xs text-[#477352]">{profileStatus}</p>}
+                <button disabled={savingProfile} className="h-10 rounded-xl bg-[#20543b] px-4 text-xs font-bold text-white disabled:opacity-60">{savingProfile ? 'Saving…' : 'Save profile'}</button>
+              </div>
+            </form>
+          </section>
+          <section className="mt-4 rounded-2xl border border-[#e9ece5] bg-white p-4 sm:p-6">
+            <h2 className="text-sm font-bold text-[#34483a]">Password and sessions</h2>
+            <p className="mt-1 text-xs leading-5 text-[#87928a]">Choose a password with at least 12 characters. Changing it signs out your other active sessions.</p>
+            <form onSubmit={savePassword} className="mt-4 grid gap-4 sm:grid-cols-2">
+              <label className="text-xs font-semibold text-[#526258]">
+                Current password
+                <input required type="password" maxLength={128} autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} className="mt-1.5 h-11 w-full rounded-xl border border-[#e4e9e1] px-3 text-sm font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+              </label>
+              <label className="text-xs font-semibold text-[#526258]">
+                New password
+                <input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className="mt-1.5 h-11 w-full rounded-xl border border-[#e4e9e1] px-3 text-sm font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+              </label>
+              <div className="sm:col-span-2">
+                {passwordError && <p role="alert" className="mb-3 rounded-lg bg-[#fbefec] px-3 py-2 text-xs text-[#a65347]">{passwordError}</p>}
+                {passwordStatus && <p role="status" className="mb-3 rounded-lg bg-[#edf4ee] px-3 py-2 text-xs text-[#477352]">{passwordStatus}</p>}
+                <button disabled={savingPassword} className="h-10 rounded-xl border border-[#dce5dc] px-4 text-xs font-bold text-[#466b50] disabled:opacity-60">{savingPassword ? 'Updating…' : 'Update password'}</button>
+              </div>
+            </form>
+          </section>
+        </>
+      )}
+      <section className="mt-4 flex flex-col gap-3 rounded-2xl border border-[#e9ece5] bg-white p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+        <div>
+          <h2 className="text-sm font-bold text-[#34483a]">Sign out</h2>
+          <p className="mt-1 text-xs text-[#87928a]">End this session on the current device.</p>
+        </div>
+        <button type="button" onClick={onSignOut} className="h-10 rounded-xl border border-[#e8d9d4] px-4 text-xs font-bold text-[#a65347] transition hover:bg-[#fbefec]">Sign out</button>
+      </section>
+    </div>
+  );
+}
+
 function PaymentModal({ groupId, contribution, accessToken, onClose, onConfirmed }) {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [payment, setPayment] = useState(null);
@@ -903,7 +1031,7 @@ function AdminWorkspace({ accessToken, adminAccess, onCreateGroup, refreshKey })
   const [groupDetails, setGroupDetails] = useState(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState('');
-  const [memberEmails, setMemberEmails] = useState({});
+  const [memberDrafts, setMemberDrafts] = useState({});
 
   async function request(path, options = {}) {
     const response = await fetch(`${API_URL}/admin${path}`, {
@@ -1252,31 +1380,68 @@ function AdminWorkspace({ accessToken, adminAccess, onCreateGroup, refreshKey })
                           <>
                             {group.status === 'active' && group.saccoStatus !== 'suspended' && (
                               <form
-                                className="mb-4 flex flex-col gap-2 sm:flex-row"
+                                className="mb-4 grid grid-cols-1 gap-2 rounded-xl border border-[#edf0e9] bg-[#fbfcf9] p-3 sm:grid-cols-2 lg:grid-cols-3"
                                 onSubmit={(event) => {
                                   event.preventDefault();
-                                  const email = memberEmails[group.id] || '';
+                                  const member = memberDrafts[group.id] || {};
                                   void runAction(async () => {
                                     await request(`/groups/${group.id}/members`, {
                                       method: 'POST',
-                                      body: JSON.stringify({ email }),
+                                      body: JSON.stringify(member),
                                     });
                                     const payload = await request(`/groups/${group.id}`);
                                     setGroupDetails(payload);
-                                    setMemberEmails((current) => ({ ...current, [group.id]: '' }));
+                                    setMemberDrafts((current) => ({ ...current, [group.id]: {} }));
                                   }, 'Member added to the group.');
                                 }}
                               >
                                 <input
                                   required
-                                  type="email"
-                                  value={memberEmails[group.id] || ''}
-                                  onChange={(event) => setMemberEmails((current) => ({ ...current, [group.id]: event.target.value }))}
-                                  placeholder="Existing ChamaFlow account email"
-                                  aria-label="New group member email"
-                                  className="h-10 min-w-0 flex-1 rounded-xl border border-[#e4e9e1] px-3 text-xs outline-none focus:border-[#83a78a]"
+                                  minLength={2}
+                                  maxLength={100}
+                                  value={memberDrafts[group.id]?.name || ''}
+                                  onChange={(event) => setMemberDrafts((current) => ({ ...current, [group.id]: { ...current[group.id], name: event.target.value } }))}
+                                  placeholder="Full name"
+                                  aria-label="New group member name"
+                                  className="h-10 min-w-0 rounded-lg border border-[#e4e9e1] px-3 text-xs outline-none focus:border-[#83a78a]"
                                 />
-                                <button disabled={submitting} className="h-10 rounded-xl border border-[#dce5dc] px-3 text-[10px] font-bold text-[#466b50] disabled:opacity-60">Add member</button>
+                                <input
+                                  maxLength={32}
+                                  value={memberDrafts[group.id]?.registrationNumber || ''}
+                                  onChange={(event) => setMemberDrafts((current) => ({ ...current, [group.id]: { ...current[group.id], registrationNumber: event.target.value } }))}
+                                  placeholder="Reg. No."
+                                  aria-label="Member registration number"
+                                  className="h-10 min-w-0 rounded-lg border border-[#e4e9e1] px-3 text-xs outline-none focus:border-[#83a78a]"
+                                />
+                                <input
+                                  type="tel"
+                                  maxLength={24}
+                                  value={memberDrafts[group.id]?.phoneNumber || ''}
+                                  onChange={(event) => setMemberDrafts((current) => ({ ...current, [group.id]: { ...current[group.id], phoneNumber: event.target.value } }))}
+                                  placeholder="Telephone"
+                                  aria-label="Member telephone number"
+                                  className="h-10 min-w-0 rounded-lg border border-[#e4e9e1] px-3 text-xs outline-none focus:border-[#83a78a]"
+                                />
+                                <input
+                                  type="email"
+                                  maxLength={254}
+                                  value={memberDrafts[group.id]?.email || ''}
+                                  onChange={(event) => setMemberDrafts((current) => ({ ...current, [group.id]: { ...current[group.id], email: event.target.value } }))}
+                                  placeholder="Email (optional)"
+                                  aria-label="Member email address"
+                                  className="h-10 min-w-0 rounded-lg border border-[#e4e9e1] px-3 text-xs outline-none focus:border-[#83a78a]"
+                                />
+                                <input
+                                  maxLength={120}
+                                  value={memberDrafts[group.id]?.location || ''}
+                                  onChange={(event) => setMemberDrafts((current) => ({ ...current, [group.id]: { ...current[group.id], location: event.target.value } }))}
+                                  placeholder="Location"
+                                  aria-label="Member location"
+                                  className="h-10 min-w-0 rounded-lg border border-[#e4e9e1] px-3 text-xs outline-none focus:border-[#83a78a]"
+                                />
+                                <button disabled={submitting} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-[#20543b] px-3 text-[10px] font-bold text-white disabled:opacity-60 sm:col-span-2 lg:col-span-1">
+                                  <Plus size={13} /> Add member
+                                </button>
                               </form>
                             )}
                             <p className="mb-3 rounded-xl border border-[#e8e4d7] bg-[#fbf9f2] px-3 py-2 text-[10px] leading-5 text-[#81734f]">
@@ -1285,13 +1450,20 @@ function AdminWorkspace({ accessToken, adminAccess, onCreateGroup, refreshKey })
                             <div className="grid gap-4 xl:grid-cols-3">
                               <div className="min-w-0">
                                 <h3 className="mb-2 text-xs font-bold text-[#34483a]">Members · {groupDetails.members.length}</h3>
-                                <div className="max-h-64 space-y-2 overflow-y-auto rounded-xl bg-[#fafbf8] p-3">
+                                <div className="max-h-72 overflow-auto rounded-xl border border-[#eef0eb] bg-[#fafbf8]">
+                                  <div className="grid min-w-[690px] grid-cols-[1.1fr_0.8fr_1fr_1fr_0.8fr] gap-3 border-b border-[#e9ece5] bg-white px-3 py-2 text-[9px] font-bold uppercase tracking-wide text-[#929c94]">
+                                    <span>Member</span><span>Reg. No.</span><span>Telephone</span><span>Email</span><span>Location</span>
+                                  </div>
                                   {groupDetails.members.map((member) => (
-                                    <div key={member.id} className="flex min-w-0 items-start justify-between gap-2">
-                                      <p className="min-w-0 truncate text-[11px] font-semibold text-[#526258]">{member.name}<span className="ml-1.5 text-[9px] font-normal text-[#87928a]">{member.role}</span></p>
-                                      <p className="max-w-[48%] truncate text-right text-[9px] text-[#87928a]">{member.email || 'Not linked'}</p>
+                                    <div key={member.id} className="grid min-w-[690px] grid-cols-[1.1fr_0.8fr_1fr_1fr_0.8fr] gap-3 border-b border-[#f0f2ed] px-3 py-2.5 text-[10px] last:border-0">
+                                      <p className="truncate font-semibold text-[#526258]">{member.name}<span className="ml-1 text-[9px] font-normal text-[#87928a]">{member.role}</span></p>
+                                      <p className="truncate text-[#87928a]">{member.registrationNumber || '—'}</p>
+                                      <p className="truncate text-[#87928a]">{member.phoneNumber || '—'}</p>
+                                      <p className="truncate text-[#87928a]">{member.email || '—'}</p>
+                                      <p className="truncate text-[#87928a]">{member.location || '—'}</p>
                                     </div>
                                   ))}
+                                  {!groupDetails.members.length && <p className="p-3 text-[10px] text-[#87928a]">No members added.</p>}
                                 </div>
                               </div>
                               <div className="min-w-0">
@@ -1372,18 +1544,38 @@ function GroupManagerModal({ groups, selectedGroupId, onClose, onSelect, onCreat
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   });
-  const [memberText, setMemberText] = useState('Your name\nMember two');
+  const [memberRows, setMemberRows] = useState([
+    { name: 'Your name', registrationNumber: '', phoneNumber: '', email: '', location: '' },
+    { name: '', registrationNumber: '', phoneNumber: '', email: '', location: '' },
+  ]);
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const members = memberText.split('\n').map((member) => member.trim()).filter(Boolean);
+  const members = memberRows.map((member) => ({
+    ...member,
+    name: member.name.trim(),
+    registrationNumber: member.registrationNumber.trim(),
+    phoneNumber: member.phoneNumber.trim(),
+    email: member.email.trim(),
+    location: member.location.trim(),
+  }));
+  const updateMember = (index, field, value) => {
+    setMemberRows((current) => current.map((member, rowIndex) => (
+      rowIndex === index ? { ...member, [field]: value } : member
+    )));
+  };
 
   if (!groups) return null;
 
   async function submitGroup(event) {
     event.preventDefault();
     setFormError('');
-    if (members.length < 2) {
-      setFormError('Add at least two members, one name per line.');
+    if (members.length < 2 || members.some((member) => member.name.length < 2)) {
+      setFormError('Enter the names of at least two members.');
+      return;
+    }
+    if (members.some((member) => member.name.length > 100 || member.registrationNumber.length > 32
+      || member.phoneNumber.length > 24 || member.email.length > 254 || member.location.length > 120)) {
+      setFormError('Check the member details and stay within the field length limits.');
       return;
     }
     setSubmitting(true);
@@ -1403,7 +1595,7 @@ function GroupManagerModal({ groups, selectedGroupId, onClose, onSelect, onCreat
         role="dialog"
         aria-modal="true"
         aria-labelledby="groups-dialog-title"
-        className="my-auto max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-xl sm:p-6"
+        className="my-auto max-h-[calc(100dvh-2rem)] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white p-4 shadow-xl sm:p-6"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
@@ -1421,7 +1613,7 @@ function GroupManagerModal({ groups, selectedGroupId, onClose, onSelect, onCreat
         </div>
 
         {creating ? (
-          <form onSubmit={submitGroup} className="mt-5 space-y-4">
+          <form onSubmit={submitGroup} className="mt-4 space-y-3">
             <label className="block text-xs font-semibold text-[#526258]">
               Group name
               <input
@@ -1468,21 +1660,68 @@ function GroupManagerModal({ groups, selectedGroupId, onClose, onSelect, onCreat
                 type="date"
                 value={startDate}
                 onChange={(event) => setStartDate(event.target.value)}
-                className="mt-1.5 h-11 w-full rounded-xl border border-[#e4e9e1] bg-white px-3 text-sm font-normal text-[#34483a] outline-none transition focus:border-[#83a78a]"
+                className="mt-1 h-10 w-full rounded-lg border border-[#e4e9e1] bg-white px-3 text-sm font-normal text-[#34483a] outline-none transition focus:border-[#83a78a] sm:max-w-xs"
               />
             </label>
-            <label className="block text-xs font-semibold text-[#526258]">
-              Member names
-              <textarea
-                required
-                rows={4}
-                value={memberText}
-                onChange={(event) => setMemberText(event.target.value)}
-                placeholder={'Amina Mwangi\nBrian Otieno'}
-                className="mt-1.5 w-full resize-y rounded-xl border border-[#e4e9e1] px-3 py-2.5 text-sm font-normal leading-6 text-[#34483a] outline-none transition focus:border-[#83a78a]"
-              />
-              <span className="mt-1 block text-[10px] font-normal text-[#89948c]">Enter at least two members, one name per line. The first is the group administrator.</span>
-            </label>
+            <section aria-labelledby="group-members-heading" className="rounded-xl border border-[#e9ece5] bg-[#fbfcf9] p-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 id="group-members-heading" className="text-xs font-bold text-[#34483a]">Member register and first-cycle contribution</h3>
+                  <p className="mt-0.5 text-[10px] text-[#89948c]">Every member is assigned the group contribution amount above. First row is the administrator.</p>
+                </div>
+                <button
+                  type="button"
+                  disabled={memberRows.length >= 100}
+                  onClick={() => setMemberRows((current) => [...current, { name: '', registrationNumber: '', phoneNumber: '', email: '', location: '' }])}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-[#dce5dc] bg-white px-3 text-[10px] font-bold text-[#466b50] disabled:opacity-50"
+                >
+                  <Plus size={13} /> Add row
+                </button>
+              </div>
+              <div className="max-h-[42vh] space-y-2 overflow-y-auto pr-1">
+                {memberRows.map((member, index) => (
+                  <fieldset key={index} className="grid grid-cols-2 gap-2 rounded-lg border border-[#edf0e9] bg-white p-2 sm:grid-cols-3 lg:grid-cols-[1.25fr_0.8fr_1fr_1.2fr_1fr_auto]">
+                    <legend className="sr-only">Member {index + 1}{index === 0 ? ', group administrator' : ''}</legend>
+                    <label className="col-span-2 text-[9px] font-semibold text-[#718077] sm:col-span-1">
+                      {index === 0 ? 'Full name · Administrator' : 'Full name'}
+                      <input
+                        required
+                        minLength={2}
+                        maxLength={100}
+                        value={member.name}
+                        onChange={(event) => updateMember(index, 'name', event.target.value)}
+                        placeholder="Member name"
+                        autoComplete="name"
+                        className="mt-1 h-9 w-full rounded-md border border-[#e4e9e1] px-2 text-[11px] font-normal text-[#34483a] outline-none focus:border-[#83a78a]"
+                      />
+                    </label>
+                    <label className="text-[9px] font-semibold text-[#718077]">
+                      Reg. No.
+                      <input maxLength={32} value={member.registrationNumber} onChange={(event) => updateMember(index, 'registrationNumber', event.target.value)} placeholder="Optional" className="mt-1 h-9 w-full rounded-md border border-[#e4e9e1] px-2 text-[11px] font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+                    </label>
+                    <label className="text-[9px] font-semibold text-[#718077]">
+                      Telephone
+                      <input type="tel" maxLength={24} value={member.phoneNumber} onChange={(event) => updateMember(index, 'phoneNumber', event.target.value)} placeholder="07xx xxx xxx" autoComplete="tel" className="mt-1 h-9 w-full rounded-md border border-[#e4e9e1] px-2 text-[11px] font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+                    </label>
+                    <label className="col-span-2 text-[9px] font-semibold text-[#718077] sm:col-span-1">
+                      Email
+                      <input type="email" maxLength={254} value={member.email} onChange={(event) => updateMember(index, 'email', event.target.value)} placeholder="Optional" autoComplete="email" className="mt-1 h-9 w-full rounded-md border border-[#e4e9e1] px-2 text-[11px] font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+                    </label>
+                    <label className="text-[9px] font-semibold text-[#718077]">
+                      Location
+                      <input maxLength={120} value={member.location} onChange={(event) => updateMember(index, 'location', event.target.value)} placeholder="Optional" className="mt-1 h-9 w-full rounded-md border border-[#e4e9e1] px-2 text-[11px] font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+                    </label>
+                    <div className="flex items-end justify-end">
+                      {memberRows.length > 2 && (
+                        <button type="button" aria-label={`Remove member row ${index + 1}`} onClick={() => setMemberRows((current) => current.filter((_, rowIndex) => rowIndex !== index))} className="grid h-9 w-9 place-items-center rounded-md text-[#89948c] hover:bg-[#fbefec] hover:text-[#a65347]">
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </div>
+                  </fieldset>
+                ))}
+              </div>
+            </section>
             {formError && <p role="alert" className="rounded-xl bg-[#fbefec] px-3 py-2 text-xs text-[#a65347]">{formError}</p>}
             <div className="flex gap-2 pt-1">
               <button type="button" disabled={submitting} onClick={() => { setCreating(false); setFormError(''); }} className="h-11 flex-1 rounded-xl border border-[#e4e9e1] text-xs font-bold text-[#617168] transition hover:bg-[#f7f8f4] disabled:opacity-60">
@@ -1492,7 +1731,7 @@ function GroupManagerModal({ groups, selectedGroupId, onClose, onSelect, onCreat
                 <Plus size={15} /> {submitting ? 'Creating…' : 'Create chama'}
               </button>
             </div>
-            <p className="text-center text-[10px] text-[#929c94]">Demo groups stay in this browser session. PostgreSQL groups are saved by the backend.</p>
+            <p className="text-center text-[10px] text-[#929c94]">Demo groups stay in this browser session. Signed-in groups and member contributions are saved to PostgreSQL.</p>
           </form>
         ) : (
           <>
@@ -1526,10 +1765,34 @@ function GroupManagerModal({ groups, selectedGroupId, onClose, onSelect, onCreat
   );
 }
 
-function GroupPage({ data, contributions, searchTerm }) {
+function GroupPage({ data, contributions, searchTerm, userEmail, onAddMember }) {
+  const [memberDraft, setMemberDraft] = useState({ name: '', registrationNumber: '', phoneNumber: '', email: '', location: '' });
+  const [addMemberError, setAddMemberError] = useState('');
+  const [addMemberStatus, setAddMemberStatus] = useState('');
+  const [addingMember, setAddingMember] = useState(false);
   const query = searchTerm.trim().toLocaleLowerCase();
   const members = data.members.filter((member) => member.name.toLocaleLowerCase().includes(query));
   const historyStats = new Map(data.members.map((member) => [member.id, contributionStats(member.id, contributions)]));
+  const canManageMembers = Boolean(userEmail) && data.members.some((member) => (
+    member.role === 'Administrator' && member.email?.toLocaleLowerCase() === userEmail?.toLocaleLowerCase()
+  ));
+
+  async function addMember(event) {
+    event.preventDefault();
+    setAddingMember(true);
+    setAddMemberError('');
+    setAddMemberStatus('');
+    try {
+      await onAddMember(memberDraft);
+      setMemberDraft({ name: '', registrationNumber: '', phoneNumber: '', email: '', location: '' });
+      setAddMemberStatus('Member and first-cycle contribution added.');
+    } catch (error) {
+      setAddMemberError(error.message || 'Could not add this member.');
+    } finally {
+      setAddingMember(false);
+    }
+  }
+
   return (
     <div>
       <p className="text-xs font-semibold text-[#88948b]">Your chama</p>
@@ -1539,27 +1802,71 @@ function GroupPage({ data, contributions, searchTerm }) {
       <p className="mt-1 text-sm text-[#849087]">
         {data.summary.memberCount} members · {formatCurrency(data.group.contributionAmount)} {data.group.frequency || 'monthly'} contribution
       </p>
-      <div className="mt-6 hidden overflow-hidden rounded-2xl border border-[#e9ece5] bg-white sm:block">
-        <div className="grid grid-cols-[1fr_auto_auto] gap-4 border-b border-[#eef0eb] px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-[#929c94]">
-          <span>Member</span><span>Current cycle</span><span>On-time history</span>
-        </div>
-        {members.map((member, index) => (
-          <div key={member.id} className="grid grid-cols-[1fr_auto_auto] items-center gap-4 border-b border-[#f1f3ef] px-5 py-4 last:border-0">
-            <div className="flex min-w-0 items-center gap-3">
-              <MemberAvatar name={member.name} index={index} />
-              <div className="min-w-0">
-                <p className="truncate text-xs font-bold text-[#3a4b3f]">{member.name}</p>
-                <p className="mt-0.5 text-[10px] text-[#929c94]">{member.role}</p>
-              </div>
+      {canManageMembers && (
+        <form onSubmit={addMember} className="mt-5 rounded-2xl border border-[#e9ece5] bg-white p-4 sm:p-5">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold text-[#34483a]">Add a group member</h2>
+              <p className="mt-1 text-[10px] text-[#87928a]">A contribution record for cycle {data.summary.cycleNumber} will be created automatically.</p>
             </div>
-            <span className={`rounded-full px-2 py-1 text-[9px] font-bold ${member.paid ? 'bg-[#eaf3eb] text-[#43805a]' : 'bg-[#f7f0e5] text-[#9a773d]'}`}>
-              {member.paid ? 'Paid' : 'Pending'}
-            </span>
-            <span className="text-xs font-bold text-[#526c57]">
-              {historyStats.get(member.id).rate === null ? 'Not enough data' : `${historyStats.get(member.id).rate}%`}
-            </span>
+            <span className="rounded-full bg-[#edf4ee] px-2.5 py-1 text-[9px] font-bold text-[#4d795a]">{formatCurrency(data.group.contributionAmount)} per cycle</span>
           </div>
-        ))}
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            <label className="text-[10px] font-semibold text-[#718077]">
+              Full name
+              <input required minLength={2} maxLength={100} value={memberDraft.name} onChange={(event) => setMemberDraft((current) => ({ ...current, name: event.target.value }))} className="mt-1 h-10 w-full rounded-lg border border-[#e4e9e1] px-3 text-xs font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+            </label>
+            <label className="text-[10px] font-semibold text-[#718077]">
+              Registration number
+              <input maxLength={32} value={memberDraft.registrationNumber} onChange={(event) => setMemberDraft((current) => ({ ...current, registrationNumber: event.target.value }))} className="mt-1 h-10 w-full rounded-lg border border-[#e4e9e1] px-3 text-xs font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+            </label>
+            <label className="text-[10px] font-semibold text-[#718077]">
+              Telephone number
+              <input type="tel" maxLength={24} autoComplete="tel" value={memberDraft.phoneNumber} onChange={(event) => setMemberDraft((current) => ({ ...current, phoneNumber: event.target.value }))} className="mt-1 h-10 w-full rounded-lg border border-[#e4e9e1] px-3 text-xs font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+            </label>
+            <label className="text-[10px] font-semibold text-[#718077]">
+              Email address
+              <input type="email" maxLength={254} autoComplete="email" value={memberDraft.email} onChange={(event) => setMemberDraft((current) => ({ ...current, email: event.target.value }))} className="mt-1 h-10 w-full rounded-lg border border-[#e4e9e1] px-3 text-xs font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+            </label>
+            <label className="text-[10px] font-semibold text-[#718077]">
+              Location
+              <input maxLength={120} value={memberDraft.location} onChange={(event) => setMemberDraft((current) => ({ ...current, location: event.target.value }))} className="mt-1 h-10 w-full rounded-lg border border-[#e4e9e1] px-3 text-xs font-normal text-[#34483a] outline-none focus:border-[#83a78a]" />
+            </label>
+            <button disabled={addingMember} className="mt-auto inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-[#20543b] px-4 text-xs font-bold text-white disabled:opacity-60">
+              <Plus size={14} /> {addingMember ? 'Adding…' : 'Add member'}
+            </button>
+          </div>
+          {addMemberError && <p role="alert" className="mt-3 rounded-lg bg-[#fbefec] px-3 py-2 text-xs text-[#a65347]">{addMemberError}</p>}
+          {addMemberStatus && <p role="status" className="mt-3 rounded-lg bg-[#edf4ee] px-3 py-2 text-xs text-[#477352]">{addMemberStatus}</p>}
+        </form>
+      )}
+      <div className="mt-6 hidden overflow-x-auto rounded-2xl border border-[#e9ece5] bg-white sm:block">
+        <div className="min-w-[850px]">
+          <div className="grid grid-cols-[1.2fr_0.8fr_1fr_1.2fr_0.9fr_auto_auto] gap-3 border-b border-[#eef0eb] px-4 py-3 text-[9px] font-bold uppercase tracking-wider text-[#929c94]">
+            <span>Member</span><span>Reg. No.</span><span>Telephone</span><span>Email</span><span>Location</span><span>Cycle</span><span>History</span>
+          </div>
+          {members.map((member, index) => (
+            <div key={member.id} className="grid grid-cols-[1.2fr_0.8fr_1fr_1.2fr_0.9fr_auto_auto] items-center gap-3 border-b border-[#f1f3ef] px-4 py-3 last:border-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <MemberAvatar name={member.name} index={index} />
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-bold text-[#3a4b3f]">{member.name}</p>
+                  <p className="mt-0.5 text-[9px] text-[#929c94]">{member.role}</p>
+                </div>
+              </div>
+              <span className="truncate text-[10px] text-[#738076]">{member.registrationNumber || '—'}</span>
+              <span className="truncate text-[10px] text-[#738076]">{member.phoneNumber || '—'}</span>
+              <span className="truncate text-[10px] text-[#738076]">{member.email || '—'}</span>
+              <span className="truncate text-[10px] text-[#738076]">{member.location || '—'}</span>
+              <span className={`rounded-full px-2 py-1 text-center text-[9px] font-bold ${member.paid ? 'bg-[#eaf3eb] text-[#43805a]' : 'bg-[#f7f0e5] text-[#9a773d]'}`}>
+                {member.paid ? 'Paid' : 'Pending'}
+              </span>
+              <span className="text-right text-xs font-bold text-[#526c57]">
+                {historyStats.get(member.id).rate === null ? '—' : `${historyStats.get(member.id).rate}%`}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
       <div className="mt-6 space-y-3 sm:hidden">
         {members.map((member, index) => (
@@ -1580,6 +1887,19 @@ function GroupPage({ data, contributions, searchTerm }) {
                 {historyStats.get(member.id).rate === null ? 'Not enough data' : `${historyStats.get(member.id).rate}%`}
               </span>
             </div>
+            <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-[#f1f3ef] pt-3 text-[10px]">
+              {[
+                ['Reg. No.', member.registrationNumber],
+                ['Telephone', member.phoneNumber],
+                ['Email', member.email],
+                ['Location', member.location],
+              ].map(([label, value]) => (
+                <div key={label} className="min-w-0">
+                  <dt className="text-[#929c94]">{label}</dt>
+                  <dd className="mt-0.5 truncate font-medium text-[#526258]">{value || '—'}</dd>
+                </div>
+              ))}
+            </dl>
           </article>
         ))}
       </div>
@@ -1633,6 +1953,10 @@ function ContributionsPage({
   const [filter, setFilter] = useState('All');
   const query = searchTerm.trim().toLocaleLowerCase();
   const memberById = new Map(data.members.map((member) => [member.id, member]));
+  const currentMember = userEmail && data.members.find((member) => (
+    member.email?.toLocaleLowerCase() === userEmail?.toLocaleLowerCase()
+  ));
+  const isGroupManager = ['Administrator', 'Treasurer'].includes(currentMember?.role);
   const visible = contributions
     .filter((item) => {
       const matchesQuery = !query || item.memberName.toLocaleLowerCase().includes(query);
@@ -1655,7 +1979,7 @@ function ContributionsPage({
     if (item.status === 'paid' || item.status === 'waived') return false;
     if (['initiated', 'pending', 'verification_required'].includes(item.paymentStatus)) return false;
     const member = memberById.get(item.memberId);
-    return demoMode || member?.email === userEmail;
+    return demoMode || member?.id === currentMember?.id || isGroupManager;
   }
 
   return (
@@ -1756,7 +2080,13 @@ function ContributionsPage({
                         disabled={recordingId === item.id}
                         className="w-fit rounded-lg bg-[#20543b] px-3 py-2 text-[10px] font-bold text-white transition hover:bg-[#173f2c] disabled:cursor-wait disabled:opacity-60"
                       >
-                        {recordingId === item.id ? 'Recording…' : demoMode ? 'Record simulated payment' : 'Pay with M-Pesa sandbox'}
+                        {recordingId === item.id
+                          ? 'Recording…'
+                          : demoMode
+                            ? 'Record simulated payment'
+                            : isGroupManager && memberById.get(item.memberId)?.id !== currentMember?.id
+                              ? 'Record internal payment'
+                              : 'Pay with M-Pesa sandbox'}
                       </button>
                     ) : (
                       <span className="text-[10px] text-[#a0a9a1]">{item.status === 'paid' ? 'Complete' : paymentInProgress ? item.paymentReference : 'Member only'}</span>
@@ -2581,9 +2911,107 @@ function App() {
       setError(fetchError.message || 'Could not load the selected group.');
     }
   };
+  const addGroupMember = async (memberDetails) => {
+    if (!data?.group?.id) throw new Error('Select a savings group before adding a member.');
+    const demoMode = authState === 'demo' || typeof data.group.id === 'string';
+    if (demoMode) {
+      const memberId = `demo-member-${Date.now()}`;
+      const member = { id: memberId, ...memberDetails, role: 'Member', trustScore: 70, paid: false };
+      const position = data.members.length + 1;
+      const payoutDate = new Date(`${data.group.startDate}T12:00:00`);
+      if (data.group.frequency === 'monthly') payoutDate.setMonth(payoutDate.getMonth() + position - 1);
+      else payoutDate.setDate(payoutDate.getDate() + (position - 1) * (data.group.frequency === 'biweekly' ? 14 : 7));
+      const nextData = {
+        ...data,
+        group: { ...data.group, memberCount: position },
+        summary: {
+          ...data.summary,
+          memberCount: position,
+          contributionProgress: position
+            ? Math.round((data.summary.paidContributions / position) * 100)
+            : 0,
+        },
+        members: [...data.members, member],
+        slots: [...data.slots, {
+          id: `${data.group.id}-slot-${position}`,
+          position,
+          amount: Number(data.group.contributionAmount) * position,
+          payoutDate: payoutDate.toISOString().slice(0, 10),
+          payoutDateLabel: new Intl.DateTimeFormat('en-KE', { day: 'numeric', month: 'short' }).format(payoutDate),
+          status: 'upcoming',
+          isListed: false,
+          memberName: member.name,
+        }],
+        activity: [
+          { id: `demo-member-activity-${Date.now()}`, type: 'contribution', title: `${member.name} joined the circle`, amount: data.group.contributionAmount, timeLabel: 'Just now' },
+          ...data.activity,
+        ].slice(0, 10),
+      };
+      const nextContribution = {
+        id: `demo-contribution-${Date.now()}`,
+        memberId,
+        memberName: member.name,
+        periodNumber: data.summary.cycleNumber,
+        amount: data.group.contributionAmount,
+        dueDate: data.group.startDate,
+        status: data.group.startDate < new Date().toISOString().slice(0, 10) ? 'late' : 'pending',
+        paymentMethod: 'manual',
+        paidAt: null,
+      };
+      setData(nextData);
+      setOfflineGroupData((current) => new Map(current).set(data.group.id, nextData));
+      setGroups((current) => current.map((group) => String(group.id) === String(data.group.id)
+        ? { ...group, memberCount: position }
+        : group));
+      setContributions((current) => [...current, nextContribution]);
+      return;
+    }
+
+    const response = await fetch(`${API_URL}/groups/${encodeURIComponent(data.group.id)}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(memberDetails),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not add this member.');
+    const [dashboardResponse, contributionsResponse] = await Promise.all([
+      fetch(`${API_URL}/groups/${encodeURIComponent(data.group.id)}/dashboard`, { headers: { Authorization: `Bearer ${accessToken}` } }),
+      fetch(`${API_URL}/groups/${encodeURIComponent(data.group.id)}/contributions`, { headers: { Authorization: `Bearer ${accessToken}` } }),
+    ]);
+    const [dashboard, contributionPayload] = await Promise.all([dashboardResponse.json(), contributionsResponse.json()]);
+    if (!dashboardResponse.ok) throw new Error(dashboard.error || 'Member was added, but the group could not be refreshed.');
+    if (!contributionsResponse.ok) throw new Error(contributionPayload.error || 'Member was added, but contributions could not be refreshed.');
+    setData(dashboard);
+    setContributions(contributionPayload.contributions || []);
+    setGroups((current) => current.map((group) => String(group.id) === String(data.group.id)
+      ? { ...group, memberCount: dashboard.summary.memberCount }
+      : group));
+  };
   const recordContribution = async (contribution) => {
     const demoMode = authState === 'demo' || typeof data?.group?.id === 'string';
     if (!demoMode) {
+      const currentMember = data.members.find((member) => (
+        member.email?.toLocaleLowerCase() === user?.email?.toLocaleLowerCase()
+      ));
+      if (currentMember && ['Administrator', 'Treasurer'].includes(currentMember.role)
+        && currentMember.id !== contribution.memberId) {
+        setRecordingId(contribution.id);
+        setContributionsError('');
+        try {
+          const response = await fetch(
+            `${API_URL}/groups/${encodeURIComponent(data.group.id)}/contributions/${encodeURIComponent(contribution.id)}/record-payment`,
+            { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` } },
+          );
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || 'Could not record this contribution.');
+          await refreshAfterPayment();
+        } catch (requestError) {
+          setContributionsError(requestError.message || 'Could not record this contribution.');
+        } finally {
+          setRecordingId(null);
+        }
+        return;
+      }
       setPaymentContribution(contribution);
       return;
     }
@@ -2731,7 +3159,8 @@ function App() {
         groupCount={groups.length}
         adminAccess={adminAccess}
         userName={user?.fullName || 'Demo guest'}
-        onInfo={openInfo}
+        userEmail={user?.email}
+        onAccountSettings={() => selectPage('Settings')}
       />
       <main className="min-w-0 flex-1">
         <header className="sticky top-0 z-20 flex h-[68px] items-center justify-between border-b border-[#e9ece5] bg-[#f6f7f2]/95 px-4 backdrop-blur sm:px-7 lg:px-9">
@@ -2828,7 +3257,17 @@ function App() {
         </header>
 
         <div className="mx-auto max-w-[1440px] px-4 py-6 sm:px-7 sm:py-8 lg:px-9">
-          {activePage === 'Administration' && authState === 'authenticated' && (adminAccess.platformAdmin || adminAccess.saccoAdmin) ? (
+          {activePage === 'Settings' ? (
+            <div className="page-transition">
+              <AccountSettingsPage
+                user={user}
+                accessToken={accessToken}
+                demoMode={authState !== 'authenticated'}
+                onUserUpdated={setUser}
+                onSignOut={signOut}
+              />
+            </div>
+          ) : activePage === 'Administration' && authState === 'authenticated' && (adminAccess.platformAdmin || adminAccess.saccoAdmin) ? (
             <div className="page-transition">
               <AdminWorkspace
                 accessToken={accessToken}
@@ -2911,7 +3350,7 @@ function App() {
                     searchTerm={searchTerm}
                   />
                 ) : activePage === 'My group' ? (
-                  <GroupPage data={data} contributions={contributions} searchTerm={searchTerm} />
+                  <GroupPage data={data} contributions={contributions} searchTerm={searchTerm} userEmail={user?.email} onAddMember={addGroupMember} />
                 ) : (
                   <GroupPage data={data} contributions={contributions} searchTerm={searchTerm} />
                 )}

@@ -370,7 +370,10 @@ router.get('/groups/:groupId', async (req, res, next) => {
     if (!group) return res.status(404).json({ error: 'Savings group not found.' });
     const [membersResult, contributionsResult, slotsResult] = await Promise.all([
       pool.query(
-        `SELECT m.id, m.name, m.role, u.email
+        `SELECT m.id, m.name, m.role,
+                m.registration_number AS "registrationNumber",
+                m.phone_number AS "phoneNumber", m.location,
+                COALESCE(u.email, m.contact_email) AS email
          FROM members m
          LEFT JOIN users u ON u.id = m.user_id
          WHERE m.group_id = $1
@@ -430,10 +433,18 @@ router.get('/groups/:groupId', async (req, res, next) => {
 
 router.post('/groups/:groupId/members', async (req, res, next) => {
   const groupId = parseId(req.params.groupId);
+  const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+  const registrationNumber = typeof req.body.registrationNumber === 'string' ? req.body.registrationNumber.trim() : '';
+  const phoneNumber = typeof req.body.phoneNumber === 'string' ? req.body.phoneNumber.trim() : '';
+  const location = typeof req.body.location === 'string' ? req.body.location.trim() : '';
   const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   if (!groupId) return res.status(400).json({ error: 'Group ID must be a positive integer.' });
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
-    return res.status(400).json({ error: 'Enter the email address of an existing ChamaFlow account.' });
+  if (name.length < 2 || name.length > 100) {
+    return res.status(400).json({ error: 'Member name must be between 2 and 100 characters.' });
+  }
+  if (registrationNumber.length > 32 || phoneNumber.length > 24 || location.length > 120
+    || email.length > 254 || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+    return res.status(400).json({ error: 'Check the member registration number, phone, location, and email details.' });
   }
 
   const client = await pool.connect();
@@ -464,22 +475,29 @@ router.post('/groups/:groupId/members', async (req, res, next) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'Members can only be added to an active group.' });
     }
-    const { rows: userRows } = await client.query(
-      'SELECT id, full_name AS "fullName", email FROM users WHERE LOWER(email) = $1',
-      [email],
-    );
-    if (!userRows[0]) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'No ChamaFlow account exists with that email yet.' });
+    const { rows: userRows } = email
+      ? await client.query('SELECT id, full_name AS "fullName", email FROM users WHERE LOWER(email) = $1', [email])
+      : { rows: [] };
+    const target = userRows[0] || null;
+    if (target) {
+      const { rows: existing } = await client.query(
+        'SELECT 1 FROM members WHERE group_id = $1 AND user_id = $2',
+        [groupId, target.id],
+      );
+      if (existing.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'That account is already a member of this group.' });
+      }
     }
-    const target = userRows[0];
-    const { rows: existing } = await client.query(
-      'SELECT 1 FROM members WHERE group_id = $1 AND user_id = $2',
-      [groupId, target.id],
-    );
-    if (existing.length) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ error: 'That account is already a member of this group.' });
+    if (registrationNumber) {
+      const { rows: existing } = await client.query(
+        'SELECT 1 FROM members WHERE group_id = $1 AND LOWER(registration_number) = LOWER($2)',
+        [groupId, registrationNumber],
+      );
+      if (existing.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'That registration number is already used in this group.' });
+      }
     }
     const { rows: locked } = await client.query(
       `SELECT 1 FROM payout_slots WHERE group_id = $1 AND status = 'paid'
@@ -508,10 +526,14 @@ router.post('/groups/:groupId/members', async (req, res, next) => {
       return res.status(400).json({ error: 'The total payout is too large to add another member.' });
     }
     const { rows: memberRows } = await client.query(
-      `INSERT INTO members (group_id, user_id, name, role)
-       VALUES ($1, $2, $3, 'Member')
-       RETURNING id, name, role`,
-      [groupId, target.id, target.fullName],
+      `INSERT INTO members (
+         group_id, user_id, name, role, registration_number,
+         phone_number, location, contact_email
+       )
+       VALUES ($1, $2, $3, 'Member', $4, $5, $6, $7)
+       RETURNING id, name, role, registration_number AS "registrationNumber",
+                 phone_number AS "phoneNumber", location`,
+      [groupId, target?.id || null, name, registrationNumber || null, phoneNumber || null, location || null, email || null],
     );
     const payoutAmount = Number(group.contributionAmount) * position;
     await client.query(
@@ -540,18 +562,19 @@ router.post('/groups/:groupId/members', async (req, res, next) => {
     await client.query(
       `INSERT INTO activity (group_id, member_id, type, description, amount)
        VALUES ($1, $2, 'contribution', $3, $4)`,
-      [groupId, memberRows[0].id, `${target.fullName} joined the circle`, group.contributionAmount],
+      [groupId, memberRows[0].id, `${name} joined the circle`, group.contributionAmount],
     );
     await recordAudit(client, req.user.id, group.saccoId, 'group.member_added', 'member', memberRows[0].id, {
       groupId,
-      email: target.email,
+      email: email || null,
     });
     await client.query('COMMIT');
     res.status(201).json({
-      member: { ...memberRows[0], email: target.email, trustScore: 70, paid: false },
+      member: { ...memberRows[0], email: email || null, trustScore: 70, paid: false },
     });
   } catch (error) {
     await client.query('ROLLBACK');
+    if (error.code === '23505') return res.status(409).json({ error: 'That registration number is already used in this group.' });
     next(error);
   } finally {
     client.release();

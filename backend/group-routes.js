@@ -49,11 +49,13 @@ async function loadDashboard(groupId) {
   const [membersResult, slotsResult, activityResult] = await Promise.all([
     pool.query(
       `SELECT m.id, m.name, m.role, m.trust_score AS "trustScore",
+              m.registration_number AS "registrationNumber",
+              m.phone_number AS "phoneNumber", m.location,
+              COALESCE(u.email, m.contact_email) AS email,
               EXISTS (
                 SELECT 1 FROM contributions c
                 WHERE c.member_id = m.id AND c.period_number = $2 AND c.status = 'paid'
-              ) AS paid,
-              u.email
+              ) AS paid
        FROM members m
        LEFT JOIN users u ON u.id = m.user_id
        WHERE m.group_id = $1
@@ -182,14 +184,33 @@ router.post('/', async (req, res, next) => {
     return res.status(400).json({ error: 'Add between 2 and 100 group members.' });
   }
 
-  const memberNames = members.map((member) => (typeof member === 'string' ? member.trim() : ''));
-  if (memberNames.some((member) => member.length < 2 || member.length > 100)) {
+  const memberRecords = members.map((member) => {
+    const record = typeof member === 'string' ? { name: member } : member;
+    return {
+      name: typeof record?.name === 'string' ? record.name.trim() : '',
+      registrationNumber: typeof record?.registrationNumber === 'string' ? record.registrationNumber.trim() : '',
+      phoneNumber: typeof record?.phoneNumber === 'string' ? record.phoneNumber.trim() : '',
+      location: typeof record?.location === 'string' ? record.location.trim() : '',
+      email: typeof record?.email === 'string' ? record.email.trim().toLowerCase() : '',
+    };
+  });
+  if (memberRecords.some((member) => member.name.length < 2 || member.name.length > 100)) {
     return res.status(400).json({ error: 'Each member name must be between 2 and 100 characters.' });
   }
-  if (new Set(memberNames.map((member) => member.toLocaleLowerCase())).size !== memberNames.length) {
+  if (memberRecords.some((member) => member.registrationNumber.length > 32
+    || member.phoneNumber.length > 24 || member.location.length > 120
+    || member.email.length > 254
+    || (member.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(member.email)))) {
+    return res.status(400).json({ error: 'Check the member registration number, phone, location, and email details.' });
+  }
+  if (new Set(memberRecords.map((member) => member.name.toLocaleLowerCase())).size !== memberRecords.length) {
     return res.status(400).json({ error: 'Member names must be unique within the group.' });
   }
-  if (amount * memberNames.length > 9999999999.99) {
+  const registrationNumbers = memberRecords.map((member) => member.registrationNumber.toLocaleLowerCase()).filter(Boolean);
+  if (new Set(registrationNumbers).size !== registrationNumbers.length) {
+    return res.status(400).json({ error: 'Registration numbers must be unique within the group.' });
+  }
+  if (amount * memberRecords.length > 9999999999.99) {
     return res.status(400).json({ error: 'The total payout is too large. Reduce the contribution or group size.' });
   }
 
@@ -226,15 +247,24 @@ router.post('/', async (req, res, next) => {
       [req.user.id, saccoId, name, amount, frequency, startDate],
     );
     const group = groupResult.rows[0];
-    const payoutAmount = amount * memberNames.length;
+    const payoutAmount = amount * memberRecords.length;
 
-    for (let index = 0; index < memberNames.length; index += 1) {
+    for (let index = 0; index < memberRecords.length; index += 1) {
       const isCreator = index === 0;
+      const member = memberRecords[index];
       const memberResult = await client.query(
-        `INSERT INTO members (group_id, user_id, name, role)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO members (
+           group_id, user_id, name, role, registration_number,
+           phone_number, location, contact_email
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id`,
-        [group.id, isCreator ? req.user.id : null, memberNames[index], isCreator ? 'Administrator' : 'Member'],
+        [
+          group.id, isCreator ? req.user.id : null, member.name,
+          isCreator ? 'Administrator' : 'Member',
+          member.registrationNumber || null, member.phoneNumber || null,
+          member.location || null, member.email || null,
+        ],
       );
       await client.query(
         `INSERT INTO payout_slots (group_id, member_id, position, payout_date, amount)
@@ -266,7 +296,7 @@ router.post('/', async (req, res, next) => {
         contributionAmount: toNumber(group.contributionAmount),
         cycleNumber: Number(group.cycleNumber),
         startDate: toDateOnly(group.startDate),
-        memberCount: memberNames.length,
+        memberCount: memberRecords.length,
       },
     });
   } catch (error) {
@@ -283,7 +313,10 @@ router.get('/:groupId/members', async (req, res, next) => {
   try {
     if (!await getMembership(groupId, req.user.id)) return res.status(404).json({ error: 'Savings group not found.' });
     const { rows } = await pool.query(
-      `SELECT m.id, m.name, m.role, m.trust_score AS "trustScore", u.email
+      `SELECT m.id, m.name, m.role, m.trust_score AS "trustScore",
+              m.registration_number AS "registrationNumber",
+              m.phone_number AS "phoneNumber", m.location,
+              COALESCE(u.email, m.contact_email) AS email
        FROM members m LEFT JOIN users u ON u.id = m.user_id
        WHERE m.group_id = $1 ORDER BY m.id`,
       [groupId],
@@ -296,10 +329,20 @@ router.get('/:groupId/members', async (req, res, next) => {
 
 router.post('/:groupId/members', async (req, res, next) => {
   const groupId = parseId(req.params.groupId);
+  const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+  const registrationNumber = typeof req.body.registrationNumber === 'string' ? req.body.registrationNumber.trim() : '';
+  const phoneNumber = typeof req.body.phoneNumber === 'string' ? req.body.phoneNumber.trim() : '';
+  const location = typeof req.body.location === 'string' ? req.body.location.trim() : '';
   const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   if (!groupId) return res.status(400).json({ error: 'Group ID must be a positive integer.' });
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
-    return res.status(400).json({ error: 'Enter the email address of an existing ChamaFlow account.' });
+  if (name.length < 2 || name.length > 100) {
+    return res.status(400).json({ error: 'Member name must be between 2 and 100 characters.' });
+  }
+  if (registrationNumber.length > 32 || phoneNumber.length > 24 || location.length > 120) {
+    return res.status(400).json({ error: 'Check the member registration number, phone, and location details.' });
+  }
+  if (email && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254)) {
+    return res.status(400).json({ error: 'Enter a valid email address.' });
   }
 
   const client = await pool.connect();
@@ -314,21 +357,35 @@ router.post('/:groupId/members', async (req, res, next) => {
     const groupResult = await client.query(
       `SELECT id, contribution_amount AS "contributionAmount", frequency,
               TO_CHAR(start_date, 'YYYY-MM-DD') AS "startDate",
-              cycle_number AS "cycleNumber"
+              cycle_number AS "cycleNumber", status AS "groupStatus"
        FROM chama_groups WHERE id = $1 FOR UPDATE`,
       [groupId],
     );
     const group = groupResult.rows[0];
-    const targetResult = await client.query('SELECT id, full_name AS name, email FROM users WHERE LOWER(email) = $1', [email]);
-    if (!targetResult.rows[0]) {
+    if (!group || group.groupStatus !== 'active') {
       await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'No ChamaFlow account exists with that email yet.' });
+      return res.status(409).json({ error: 'Members can only be added to an active group.' });
     }
-    const targetUser = targetResult.rows[0];
-    const existing = await client.query('SELECT 1 FROM members WHERE group_id = $1 AND user_id = $2', [groupId, targetUser.id]);
-    if (existing.rows.length) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ error: 'That account is already a member of this group.' });
+    const targetResult = email
+      ? await client.query('SELECT id, full_name AS name, email FROM users WHERE LOWER(email) = $1', [email])
+      : { rows: [] };
+    const targetUser = targetResult.rows[0] || null;
+    if (targetUser) {
+      const existing = await client.query('SELECT 1 FROM members WHERE group_id = $1 AND user_id = $2', [groupId, targetUser.id]);
+      if (existing.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'That account is already a member of this group.' });
+      }
+    }
+    if (registrationNumber) {
+      const existingRegistration = await client.query(
+        'SELECT 1 FROM members WHERE group_id = $1 AND LOWER(registration_number) = LOWER($2)',
+        [groupId, registrationNumber],
+      );
+      if (existingRegistration.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'That registration number is already used in this group.' });
+      }
     }
     const locked = await client.query(
       `SELECT 1 FROM payout_slots WHERE group_id = $1 AND status = 'paid'
@@ -342,16 +399,33 @@ router.post('/:groupId/members', async (req, res, next) => {
       return res.status(409).json({ error: 'Members can only be added before a payout or contribution is recorded. Add them in the next cycle instead.' });
     }
 
-    const lastSlotResult = await client.query(
-      'SELECT COALESCE(MAX(position), 0)::INTEGER AS position FROM payout_slots WHERE group_id = $1',
+    const positionResult = await client.query(
+      `SELECT COALESCE(MAX(position), 0)::INTEGER AS position,
+              COUNT(*)::INTEGER AS member_count
+       FROM payout_slots WHERE group_id = $1`,
       [groupId],
     );
-    const position = lastSlotResult.rows[0].position + 1;
+    const position = Number(positionResult.rows[0].position) + 1;
+    if (Number(positionResult.rows[0].member_count) >= 100) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This group has reached the 100-member limit.' });
+    }
+    if (Number(group.contributionAmount) * position > 9999999999.99) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'The total payout is too large to add another member.' });
+    }
     const memberResult = await client.query(
-      `INSERT INTO members (group_id, user_id, name, role)
-       VALUES ($1, $2, $3, 'Member')
-       RETURNING id, name, role`,
-      [groupId, targetUser.id, targetUser.name],
+      `INSERT INTO members (
+         group_id, user_id, name, role, registration_number,
+         phone_number, location, contact_email
+       )
+       VALUES ($1, $2, $3, 'Member', $4, $5, $6, $7)
+       RETURNING id, name, role, registration_number AS "registrationNumber",
+                 phone_number AS "phoneNumber", location`,
+      [
+        groupId, targetUser?.id || null, name, registrationNumber || null,
+        phoneNumber || null, location || null, email || null,
+      ],
     );
     const payoutAmount = Number(group.contributionAmount) * position;
     await client.query(
@@ -377,10 +451,10 @@ router.post('/:groupId/members', async (req, res, next) => {
     );
     await client.query(
       'INSERT INTO activity (group_id, member_id, type, description, amount) VALUES ($1, $2, $3, $4, $5)',
-      [groupId, memberResult.rows[0].id, 'contribution', `${targetUser.name} joined the circle`, group.contributionAmount],
+      [groupId, memberResult.rows[0].id, 'contribution', `${name} joined the circle`, group.contributionAmount],
     );
     await client.query('COMMIT');
-    res.status(201).json({ member: { ...memberResult.rows[0], email: targetUser.email, trustScore: 70, paid: false } });
+    res.status(201).json({ member: { ...memberResult.rows[0], email: email || null, trustScore: 70, paid: false } });
   } catch (error) {
     await client.query('ROLLBACK');
     next(error);
