@@ -1,4 +1,5 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const { pool } = require('./pool');
 const { requireAuth } = require('./auth-middleware');
 const { getSaccoIds, isPlatformAdmin, requireActiveSacco } = require('./admin-access');
@@ -6,6 +7,20 @@ const { toDateOnly, toNumber } = require('./serializers');
 
 const router = express.Router();
 const frequencies = new Set(['weekly', 'biweekly', 'monthly']);
+const discoveryLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: 'Too many group searches. Try again shortly.' },
+});
+const joinRequestLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: 'Too many membership requests. Try again later.' },
+});
 
 function parseId(value) {
   if (typeof value !== 'string' || !/^[1-9]\d{0,9}$/.test(value)) return null;
@@ -128,8 +143,267 @@ async function loadDashboard(groupId) {
   };
 }
 
+router.get('/discover', discoveryLimiter, async (req, res, next) => {
+  const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 80) : '';
+  const after = req.query.after === undefined ? 0 : parseId(String(req.query.after));
+  if (after === null) return res.status(400).json({ error: 'Directory cursor must be a positive integer.' });
+  try {
+    const { rows } = await pool.query(
+      `WITH public_groups AS (
+         SELECT g.id, g.name, g.contribution_amount, g.frequency
+         FROM chama_groups g
+         LEFT JOIN saccos s ON s.id = g.sacco_id
+         WHERE g.status = 'active'
+           AND (s.id IS NULL OR s.status = 'active')
+           AND g.id > $1
+           AND ($2 = '' OR LOWER(g.name) LIKE $3)
+         ORDER BY g.id
+         LIMIT 21
+       )
+       SELECT g.id, g.name, g.contribution_amount AS "contributionAmount",
+              g.frequency,
+              (SELECT COUNT(*)::INTEGER FROM members m WHERE m.group_id = g.id) AS "memberCount"
+       FROM public_groups g
+       ORDER BY g.id`,
+      [after, search, `${search.replace(/[\\%_]/g, '\\$&').toLowerCase()}%`],
+    );
+    const hasMore = rows.length > 20;
+    const groups = rows.slice(0, 20).map((group) => ({
+      ...group,
+      id: Number(group.id),
+      contributionAmount: toNumber(group.contributionAmount),
+      memberCount: Number(group.memberCount),
+    }));
+    res.json({
+      groups,
+      nextCursor: hasMore ? groups[groups.length - 1].id : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.use(requireAuth);
 router.use(requireActiveSacco);
+
+router.get('/join-requests/mine', async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT r.id, r.status, r.message, r.review_note AS "reviewNote",
+              r.effective_cycle AS "effectiveCycle", r.applied_at AS "appliedAt",
+              r.requested_at AS "requestedAt", r.reviewed_at AS "reviewedAt",
+              g.id AS "groupId", g.name AS "groupName"
+       FROM group_join_requests r
+       JOIN chama_groups g ON g.id = r.group_id
+       WHERE r.user_id = $1
+       ORDER BY r.requested_at DESC, r.id DESC
+       LIMIT 100`,
+      [req.user.id],
+    );
+    res.json({ requests: rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/:groupId/join-requests', joinRequestLimiter, async (req, res, next) => {
+  const groupId = parseId(req.params.groupId);
+  const message = typeof req.body.message === 'string' ? req.body.message.trim() : '';
+  if (!groupId) return res.status(400).json({ error: 'Group ID must be a positive integer.' });
+  if (message.length > 300) return res.status(400).json({ error: 'Message must be 300 characters or fewer.' });
+  try {
+    const { rows: groupsFound } = await pool.query(
+      `SELECT g.id
+       FROM chama_groups g
+       LEFT JOIN saccos s ON s.id = g.sacco_id
+       WHERE g.id = $1 AND g.status = 'active'
+         AND (s.id IS NULL OR s.status = 'active')`,
+      [groupId],
+    );
+    if (!groupsFound[0]) return res.status(404).json({ error: 'Savings group not found.' });
+
+    const { rows: memberships } = await pool.query(
+      'SELECT 1 FROM members WHERE group_id = $1 AND user_id = $2',
+      [groupId, req.user.id],
+    );
+    if (memberships.length) return res.status(409).json({ error: 'Your account is already linked to this group.' });
+
+    const { rows } = await pool.query(
+      `INSERT INTO group_join_requests (group_id, user_id, message)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (group_id, user_id) DO UPDATE
+       SET status = 'pending', message = EXCLUDED.message, review_note = NULL,
+           target_member_id = NULL, effective_cycle = NULL, applied_at = NULL,
+           requested_at = NOW(), reviewed_at = NULL, reviewed_by = NULL
+       WHERE group_join_requests.status = 'rejected'
+       RETURNING id, group_id AS "groupId", status, requested_at AS "requestedAt"`,
+      [groupId, req.user.id, message],
+    );
+    if (!rows[0]) {
+      const { rows: existing } = await pool.query(
+        `SELECT id, status, effective_cycle AS "effectiveCycle"
+         FROM group_join_requests WHERE group_id = $1 AND user_id = $2`,
+        [groupId, req.user.id],
+      );
+      return res.status(409).json({ error: 'A membership request already exists for this group.', request: existing[0] });
+    }
+    res.status(201).json({ request: rows[0] });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/:groupId/join-requests', async (req, res, next) => {
+  const groupId = parseId(req.params.groupId);
+  if (!groupId) return res.status(400).json({ error: 'Group ID must be a positive integer.' });
+  try {
+    const membership = await getMembership(groupId, req.user.id);
+    if (!membership || membership.role !== 'Administrator') {
+      return res.status(404).json({ error: 'Savings group not found.' });
+    }
+    const { rows } = await pool.query(
+      `SELECT r.id, r.message, r.requested_at AS "requestedAt",
+              u.full_name AS "applicantName", u.email AS "applicantEmail",
+              COALESCE(candidates.members, '[]'::json) AS "availableMembers"
+       FROM group_join_requests r
+       JOIN users u ON u.id = r.user_id
+       LEFT JOIN LATERAL (
+         SELECT JSON_AGG(JSONB_BUILD_OBJECT('id', m.id, 'name', m.name) ORDER BY m.id) AS members
+         FROM members m
+         WHERE m.group_id = r.group_id AND m.user_id IS NULL AND m.role <> 'Administrator'
+           AND (m.contact_email IS NULL OR LOWER(m.contact_email) = LOWER(u.email))
+           AND NOT EXISTS (
+             SELECT 1 FROM group_join_requests assigned
+             WHERE assigned.group_id = r.group_id AND assigned.target_member_id = m.id
+               AND assigned.status = 'approved' AND assigned.applied_at IS NULL
+           )
+       ) candidates ON TRUE
+       WHERE r.group_id = $1 AND r.status = 'pending'
+       ORDER BY r.requested_at, r.id
+       LIMIT 50`,
+      [groupId],
+    );
+    res.json({ requests: rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/:groupId/join-requests/:requestId', async (req, res, next) => {
+  const groupId = parseId(req.params.groupId);
+  const requestId = parseId(req.params.requestId);
+  const decision = req.body.decision;
+  const memberId = parseId(String(req.body.memberId ?? ''));
+  const reviewNote = typeof req.body.reviewNote === 'string' ? req.body.reviewNote.trim() : '';
+  if (!groupId || !requestId) return res.status(400).json({ error: 'Group and request IDs must be positive integers.' });
+  if (!['approve', 'reject'].includes(decision)) return res.status(400).json({ error: 'Choose approve or reject.' });
+  if (decision === 'approve' && !memberId) return res.status(400).json({ error: 'Choose an unclaimed group roster member.' });
+  if (reviewNote.length > 300) return res.status(400).json({ error: 'Review note must be 300 characters or fewer.' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: groupRows } = await client.query(
+      `SELECT g.id, g.cycle_number AS "cycleNumber", g.status,
+              g.sacco_id AS "saccoId", s.status AS "saccoStatus"
+       FROM chama_groups g LEFT JOIN saccos s ON s.id = g.sacco_id
+       WHERE g.id = $1 FOR UPDATE OF g`,
+      [groupId],
+    );
+    const group = groupRows[0];
+    if (!group || group.status !== 'active') {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Savings group not found.' });
+    }
+    if (group.saccoStatus === 'suspended') {
+      await client.query('ROLLBACK');
+      return res.status(423).json({ error: 'This SACCO is suspended. Membership requests cannot be reviewed.' });
+    }
+    const membership = await getMembership(groupId, req.user.id, client);
+    if (!membership || membership.role !== 'Administrator') {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Savings group not found.' });
+    }
+    const { rows: requestRows } = await client.query(
+      `SELECT r.id, r.user_id AS "userId", r.status, u.email AS "applicantEmail"
+       FROM group_join_requests r JOIN users u ON u.id = r.user_id
+       WHERE r.id = $1 AND r.group_id = $2 FOR UPDATE OF r`,
+      [requestId, groupId],
+    );
+    const joinRequest = requestRows[0];
+    if (!joinRequest || joinRequest.status !== 'pending') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This membership request is no longer pending.' });
+    }
+
+    if (decision === 'reject') {
+      await client.query(
+        `UPDATE group_join_requests
+         SET status = 'rejected', review_note = $3, reviewed_at = NOW(), reviewed_by = $2
+         WHERE id = $1`,
+        [requestId, req.user.id, reviewNote || null],
+      );
+      await client.query(
+        `INSERT INTO administration_audit (actor_id, sacco_id, action, target_type, target_id, details)
+         VALUES ($1, $2, 'group.join_request_rejected', 'join_request', $3, $4::jsonb)`,
+        [req.user.id, group.saccoId, String(requestId), JSON.stringify({ groupId })],
+      );
+      await client.query('COMMIT');
+      return res.json({ request: { id: requestId, status: 'rejected' } });
+    }
+
+    const { rows: memberRows } = await client.query(
+      `SELECT id, user_id AS "userId", contact_email AS "contactEmail", role
+       FROM members WHERE id = $1 AND group_id = $2 FOR UPDATE`,
+      [memberId, groupId],
+    );
+    const targetMember = memberRows[0];
+    if (!targetMember || targetMember.userId || targetMember.role === 'Administrator'
+      || (targetMember.contactEmail && targetMember.contactEmail.toLowerCase() !== joinRequest.applicantEmail.toLowerCase())) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Choose an unclaimed roster member whose email matches the applicant, if one is recorded.' });
+    }
+    const { rows: startedRows } = await client.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM contributions WHERE group_id = $1 AND status = 'paid'
+       ) OR EXISTS (
+         SELECT 1 FROM payout_slots WHERE group_id = $1 AND status = 'paid'
+       ) AS started`,
+      [groupId],
+    );
+    const effectiveCycle = Number(group.cycleNumber) + (startedRows[0].started ? 1 : 0);
+    if (effectiveCycle === Number(group.cycleNumber)) {
+      const { rows: linkedRows } = await client.query(
+        `UPDATE members SET user_id = $2
+         WHERE id = $1 AND group_id = $3 AND user_id IS NULL
+         RETURNING id`,
+        [memberId, joinRequest.userId, groupId],
+      );
+      if (!linkedRows[0]) throw new Error('The selected roster entry was claimed by another account.');
+    }
+    await client.query(
+      `UPDATE group_join_requests
+       SET status = 'approved', target_member_id = $2, effective_cycle = $3,
+           applied_at = CASE WHEN $3 = $4 THEN NOW() ELSE NULL END,
+           review_note = $5, reviewed_at = NOW(), reviewed_by = $6
+       WHERE id = $1`,
+      [requestId, memberId, effectiveCycle, Number(group.cycleNumber), reviewNote || null, req.user.id],
+    );
+    await client.query(
+      `INSERT INTO administration_audit (actor_id, sacco_id, action, target_type, target_id, details)
+       VALUES ($1, $2, 'group.join_request_approved', 'join_request', $3, $4::jsonb)`,
+      [req.user.id, group.saccoId, String(requestId), JSON.stringify({ groupId, memberId, effectiveCycle })],
+    );
+    await client.query('COMMIT');
+    res.json({ request: { id: requestId, status: 'approved', effectiveCycle } });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    if (error.code === '23505') return res.status(409).json({ error: 'This roster member or account has already been linked.' });
+    next(error);
+  } finally {
+    client.release();
+  }
+});
 
 router.get('/', async (req, res, next) => {
   try {

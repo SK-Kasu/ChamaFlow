@@ -246,6 +246,24 @@ router.post('/:slotId/record-payout', async (req, res, next) => {
       );
       await client.query('UPDATE chama_groups SET cycle_number = $2 WHERE id = $1', [groupId, nextCycleNumber]);
       await client.query(
+        `UPDATE members m
+         SET user_id = r.user_id
+         FROM group_join_requests r
+         WHERE r.group_id = $1 AND r.target_member_id = m.id
+           AND r.status = 'approved' AND r.effective_cycle <= $2
+           AND r.applied_at IS NULL AND m.user_id IS NULL`,
+        [groupId, nextCycleNumber],
+      );
+      await client.query(
+        `UPDATE group_join_requests r
+         SET applied_at = NOW()
+         FROM members m
+         WHERE r.group_id = $1 AND r.target_member_id = m.id
+           AND r.user_id = m.user_id AND r.status = 'approved'
+           AND r.effective_cycle <= $2 AND r.applied_at IS NULL`,
+        [groupId, nextCycleNumber],
+      );
+      await client.query(
         `UPDATE slot_listings SET status = 'closed', closed_at = NOW()
          WHERE group_id = $1 AND status = 'open'`,
         [groupId],
