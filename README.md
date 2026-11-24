@@ -9,7 +9,9 @@ A prototype workspace for Kenyan savings groups (chamas), built with React, Vite
 - Chama dashboards for members, contribution progress, activity, and payout schedules.
 - Contribution history and analytics, with demo recording and Daraja sandbox STK Push attempts.
 - Database-backed member registers with contact details and automatic first-cycle contribution records.
-- Account profile and password management for signed-in users.
+- Verified-email account registration, profile and password management, and session revocation.
+- Public, limited group discovery and member join requests reviewed by the group chairperson.
+- Membership approvals link applicants only to unclaimed entries already on the group roster; approvals after cycle activity take effect in the next cycle.
 - A sandbox payment ledger that records provider-verified test collections.
 - Platform and SACCO administration tools for organizations, groups, administrators, and audit events.
 - Sample-data demo mode when the API is unavailable.
@@ -34,7 +36,8 @@ Keep payment-provider credentials, database passwords, and JWT secrets out of th
 
 1. Create a PostgreSQL database named `chamaflow`.
 2. Copy `backend/.env.example` to `backend/.env`. Set the local database connection values and set `JWT_SECRET` to a random value of at least 32 bytes. For example, generate one locally with `openssl rand -hex 32`.
-3. Start the backend:
+3. For local development, Resend is optional: when `RESEND_API_KEY` and `EMAIL_FROM` are blank, verification links are printed in the backend console and use `APP_BASE_URL` (default `http://localhost:5173`). Open the link in a browser to verify the account. To send real email, set `RESEND_API_KEY`, `EMAIL_FROM` to a sender on a verified Resend domain, and `APP_BASE_URL` to the frontend URL used in verification links. Production requires all three values and HTTPS. Keep the API key private.
+4. Start the backend:
 
    ```sh
    cd backend
@@ -42,7 +45,7 @@ Keep payment-provider credentials, database passwords, and JWT secrets out of th
    npm run dev
    ```
 
-4. In another terminal, start the frontend:
+5. In another terminal, start the frontend:
 
    ```sh
    cd Frontend
@@ -50,7 +53,7 @@ Keep payment-provider credentials, database passwords, and JWT secrets out of th
    npm run dev
    ```
 
-5. Open <http://localhost:5173>. The API health endpoint is <http://localhost:5000/api/health>.
+6. Open <http://localhost:5173>. The API health endpoint is <http://localhost:5000/api/health>.
 
 The backend applies versioned migrations on startup. The database user needs permission to create and modify the application tables.
 
@@ -78,12 +81,14 @@ npm run build
 ## API overview
 
 - `GET /api/health` — API/database readiness.
-- `POST /api/auth/register` and `POST /api/auth/login` — account access.
+- `POST /api/auth/register`, `/api/auth/login`, and `/api/auth/verification/*` — verified-email account access.
 - `PATCH /api/auth/me` and `PATCH /api/auth/password` — update account details and password.
 - `/api/groups` — authenticated chama listing and creation.
+- `GET /api/groups/discover` — public active-group directory with keyset pagination and limited public details.
+- `POST /api/groups/:groupId/join-requests` and `GET /api/groups/join-requests/mine` — apply for a group and review your request status.
+- `GET /api/groups/:groupId/join-requests` and `PATCH /api/groups/:groupId/join-requests/:requestId` — chairperson-only request review and roster assignment.
 - `GET` and `POST /api/groups/:groupId/members` — view or add members with contact details; adding a member also creates their current-cycle contribution and payout slot.
 - `/api/groups/:groupId/contributions` — contribution history and sandbox payment operations.
 - `/api/admin` — administrator-scoped operations.
 
-
-
+The public directory returns at most 20 groups per page, and public discovery and membership-request endpoints are rate-limited. Group roster details remain private to authenticated members and authorized administrators. The default rate-limit store is process-local; use a shared store when deploying multiple API replicas so limits apply consistently across instances.

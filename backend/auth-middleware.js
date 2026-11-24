@@ -15,7 +15,8 @@ async function requireAuth(req, res, next) {
     }
 
     const { rows } = await pool.query(
-      `SELECT u.id, u.full_name AS "fullName", u.email, s.id AS "sessionId"
+      `SELECT u.id, u.full_name AS "fullName", u.email, u.email_verified_at AS "emailVerifiedAt",
+              s.id AS "sessionId"
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.id = $1 AND s.user_id = $2
@@ -23,6 +24,9 @@ async function requireAuth(req, res, next) {
       [payload.jti, Number(payload.sub)],
     );
     if (!rows[0]) return res.status(401).json({ error: 'Your session expired. Sign in again.' });
+    if (!rows[0].emailVerifiedAt) {
+      return res.status(403).json({ error: 'Verify your email address to continue.', verificationRequired: true });
+    }
     req.user = rows[0];
     req.sessionId = rows[0].sessionId;
     return next();

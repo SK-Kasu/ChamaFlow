@@ -26,6 +26,7 @@ import {
   Sparkles,
   Landmark,
   Users,
+  UserPlus,
   Wallet,
   Trash2,
   X,
@@ -39,6 +40,7 @@ const navigation = [
   { label: 'Analytics', icon: BarChart3 },
   { label: 'Slot marketplace', icon: HandCoins },
   { label: 'My group', icon: Users },
+  { label: 'Find a group', icon: UserPlus },
 ];
 
 const adminNavigation = [
@@ -778,8 +780,18 @@ function AccountSettingsPage({ user, accessToken, demoMode, onUserUpdated, onSig
         body: JSON.stringify({ fullName, email }),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'Could not update your account details.');
+      if (!response.ok) {
+        if (payload.verificationRequired) {
+          await onSignOut(payload.error || 'Verify your new email address before signing in again.');
+          return;
+        }
+        throw new Error(payload.error || 'Could not update your account details.');
+      }
       onUserUpdated(payload.user);
+      if (payload.verificationRequired) {
+        await onSignOut(payload.message || 'Verify your new email address before signing in again.');
+        return;
+      }
       setFullName(payload.user.fullName);
       setEmail(payload.user.email);
       setProfileStatus('Your account details have been saved.');
@@ -867,7 +879,7 @@ function AccountSettingsPage({ user, accessToken, demoMode, onUserUpdated, onSig
           <h2 className="text-sm font-bold text-[#34483a]">Sign out</h2>
           <p className="mt-1 text-xs text-[#87928a]">End this session on the current device.</p>
         </div>
-        <button type="button" onClick={onSignOut} className="h-10 rounded-xl border border-[#e8d9d4] px-4 text-xs font-bold text-[#a65347] transition hover:bg-[#fbefec]">Sign out</button>
+        <button type="button" onClick={() => onSignOut()} className="h-10 rounded-xl border border-[#e8d9d4] px-4 text-xs font-bold text-[#a65347] transition hover:bg-[#fbefec]">Sign out</button>
       </section>
     </div>
   );
@@ -1765,7 +1777,113 @@ function GroupManagerModal({ groups, selectedGroupId, onClose, onSelect, onCreat
   );
 }
 
-function GroupPage({ data, contributions, searchTerm, userEmail, onAddMember }) {
+function JoinRequestsPanel({ groupId, accessToken }) {
+  const [requests, setRequests] = useState([]);
+  const [selectedMembers, setSelectedMembers] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [submittingId, setSubmittingId] = useState(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  async function loadRequests(signal) {
+    const response = await fetch(`${API_URL}/groups/${encodeURIComponent(groupId)}/join-requests`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal,
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not load membership requests.');
+    setRequests(payload.requests || []);
+  }
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    loadRequests(controller.signal)
+      .catch((loadError) => {
+        if (loadError.name !== 'AbortError') setError(loadError.message || 'Could not load membership requests.');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [groupId, accessToken]);
+
+  async function reviewRequest(request, decision) {
+    setSubmittingId(request.id);
+    setError('');
+    setNotice('');
+    try {
+      const response = await fetch(
+        `${API_URL}/groups/${encodeURIComponent(groupId)}/join-requests/${encodeURIComponent(request.id)}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          body: JSON.stringify({
+            decision,
+            memberId: selectedMembers[request.id],
+          }),
+        },
+      );
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not review this request.');
+      setRequests((current) => current.filter((item) => item.id !== request.id));
+      setNotice(decision === 'reject'
+        ? 'Membership request declined.'
+        : payload.request.effectiveCycle
+          ? `Approved. Account access starts in cycle ${payload.request.effectiveCycle}.`
+          : 'Membership request approved.');
+    } catch (reviewError) {
+      setError(reviewError.message || 'Could not review this request.');
+    } finally {
+      setSubmittingId(null);
+    }
+  }
+
+  return (
+    <section className="mt-5 rounded-2xl border border-[#e9ece5] bg-white p-4 sm:p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-bold text-[#34483a]">Membership requests</h2>
+          <p className="mt-1 text-[10px] leading-5 text-[#87928a]">Review applicants and link approved accounts to an unclaimed member already on your group roster.</p>
+        </div>
+        <span className="rounded-full bg-[#f4f7f2] px-2.5 py-1 text-[10px] font-bold text-[#526c57]">{requests.length} pending</span>
+      </div>
+      {error && <p role="alert" className="mt-3 rounded-lg bg-[#fbefec] px-3 py-2 text-xs text-[#a65347]">{error}</p>}
+      {notice && <p role="status" className="mt-3 rounded-lg bg-[#edf4ee] px-3 py-2 text-xs text-[#477352]">{notice}</p>}
+      {loading ? (
+        <p className="mt-4 text-xs text-[#87928a]">Loading requests…</p>
+      ) : requests.length === 0 ? (
+        <p className="mt-4 text-xs text-[#87928a]">There are no pending membership requests.</p>
+      ) : (
+        <div className="mt-4 space-y-3">
+          {requests.map((request) => (
+            <article key={request.id} className="rounded-xl border border-[#eef0eb] bg-[#fbfcf9] p-3">
+              <p className="text-xs font-bold text-[#34483a]">{request.applicantName}</p>
+              <p className="mt-1 text-[10px] text-[#7d8980]">{request.applicantEmail}</p>
+              {request.message && <p className="mt-2 text-[11px] leading-5 text-[#68776c]">{request.message}</p>}
+              <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                <select
+                  aria-label={`Roster member for ${request.applicantName}`}
+                  value={selectedMembers[request.id] || ''}
+                  onChange={(event) => setSelectedMembers((current) => ({ ...current, [request.id]: event.target.value }))}
+                  className="h-10 min-w-0 rounded-lg border border-[#e4e9e1] bg-white px-3 text-xs"
+                >
+                  <option value="">Select an unclaimed roster member</option>
+                  {request.availableMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                </select>
+                <button type="button" disabled={submittingId === request.id} onClick={() => void reviewRequest(request, 'reject')} className="h-10 rounded-lg border border-[#eadbd7] px-3 text-[10px] font-bold text-[#a65347] disabled:opacity-50">Decline</button>
+                <button type="button" disabled={!selectedMembers[request.id] || submittingId === request.id} onClick={() => void reviewRequest(request, 'approve')} className="h-10 rounded-lg bg-[#20543b] px-3 text-[10px] font-bold text-white disabled:opacity-50">{submittingId === request.id ? 'Saving…' : 'Approve'}</button>
+              </div>
+              {request.availableMembers.length === 0 && <p className="mt-2 text-[10px] text-[#9a773d]">No eligible unclaimed roster entries. Check the applicant details or update the roster before approving.</p>}
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function GroupPage({ data, contributions, searchTerm, userEmail, accessToken, onAddMember }) {
   const [memberDraft, setMemberDraft] = useState({ name: '', registrationNumber: '', phoneNumber: '', email: '', location: '' });
   const [addMemberError, setAddMemberError] = useState('');
   const [addMemberStatus, setAddMemberStatus] = useState('');
@@ -1802,6 +1920,9 @@ function GroupPage({ data, contributions, searchTerm, userEmail, onAddMember }) 
       <p className="mt-1 text-sm text-[#849087]">
         {data.summary.memberCount} members · {formatCurrency(data.group.contributionAmount)} {data.group.frequency || 'monthly'} contribution
       </p>
+      {canManageMembers && (
+        <JoinRequestsPanel groupId={data.group.id} accessToken={accessToken} />
+      )}
       {canManageMembers && (
         <form onSubmit={addMember} className="mt-5 rounded-2xl border border-[#e9ece5] bg-white p-4 sm:p-5">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -2367,7 +2488,162 @@ function AnalyticsPage({ data, contributions, loading, error, demoMode, onContri
   );
 }
 
-function LandingPage({ onSignIn, onCreateAccount, onDemo, notice }) {
+function GroupDiscoveryPage({ accessToken, onBack, onCreateAccount }) {
+  const [search, setSearch] = useState('');
+  const [groups, setGroups] = useState([]);
+  const [requests, setRequests] = useState([]);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [submittingGroupId, setSubmittingGroupId] = useState(null);
+
+  async function loadGroups(cursor = null, append = false, signal) {
+    const params = new URLSearchParams({ search: search.trim() });
+    if (cursor) params.set('after', cursor);
+    const response = await fetch(`${API_URL}/groups/discover?${params}`, { signal });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not load the group directory.');
+    setGroups((current) => append ? [...current, ...payload.groups] : payload.groups);
+    setNextCursor(payload.nextCursor);
+  }
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      setError('');
+      try {
+        await loadGroups(null, false, controller.signal);
+        if (accessToken) {
+          const response = await fetch(`${API_URL}/groups/join-requests/mine`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            signal: controller.signal,
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || 'Could not load your membership requests.');
+          setRequests(payload.requests || []);
+        }
+      } catch (loadError) {
+        if (loadError.name !== 'AbortError') setError(loadError.message || 'Could not load the group directory.');
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }, 250);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [search, accessToken]);
+
+  async function requestMembership(group) {
+    setSubmittingGroupId(group.id);
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch(`${API_URL}/groups/${encodeURIComponent(group.id)}/join-requests`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({}),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not submit your request.');
+      setRequests((current) => [
+        payload.request,
+        ...current.filter((item) => String(item.groupId) !== String(group.id)),
+      ]);
+      setMessage(`Your request to join ${group.name} was sent to its chairperson.`);
+    } catch (requestError) {
+      setError(requestError.message || 'Could not submit your request.');
+    } finally {
+      setSubmittingGroupId(null);
+    }
+  }
+
+  async function loadMore() {
+    if (!nextCursor || loading) return;
+    setLoading(true);
+    setError('');
+    try {
+      await loadGroups(String(nextCursor), true);
+    } catch (loadError) {
+      setError(loadError.message || 'Could not load more groups.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function getRequest(groupId) {
+    return requests.find((item) => String(item.groupId) === String(groupId));
+  }
+
+  return (
+    <main className="page-transition min-h-screen bg-[#f6f7f2] px-4 py-8 sm:px-8">
+      <div className="mx-auto max-w-5xl">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold text-[#88948b]">ChamaFlow directory</p>
+            <h1 className="display-font mt-2 text-2xl font-extrabold tracking-[-0.05em] text-[#20362a] sm:text-3xl">Find a savings group</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-[#849087]">Browse active groups. Their chairperson must approve a request before your account can access the member workspace.</p>
+          </div>
+          {onBack && <button type="button" onClick={onBack} className="shrink-0 rounded-xl border border-[#dfe7dd] bg-white px-3 py-2 text-xs font-bold text-[#526c57]">Back</button>}
+        </div>
+        <label className="mt-5 flex h-11 max-w-xl items-center gap-2 rounded-xl border border-[#e4e9e1] bg-white px-3">
+          <Search size={15} className="text-[#87928a]" />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} maxLength={80} aria-label="Search active groups" placeholder="Search by group name" className="min-w-0 flex-1 text-sm outline-none" />
+        </label>
+        {error && <p role="alert" className="mt-4 rounded-xl bg-[#fbefec] px-4 py-3 text-xs text-[#a65347]">{error}</p>}
+        {message && <p role="status" className="mt-4 rounded-xl bg-[#edf4ee] px-4 py-3 text-xs text-[#477352]">{message}</p>}
+        {loading && groups.length === 0 ? (
+          <p className="mt-8 text-center text-xs font-semibold text-[#819087]">Loading active groups…</p>
+        ) : (
+          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {groups.map((group) => {
+              const joinRequest = getRequest(group.id);
+              const isPending = joinRequest?.status === 'pending';
+              const isApproved = joinRequest?.status === 'approved';
+              return (
+                <article key={group.id} className="rounded-2xl border border-[#e9ece5] bg-white p-5">
+                  <h2 className="display-font text-base font-extrabold text-[#24382b]">{group.name}</h2>
+                  <p className="mt-2 text-xs text-[#7d8980]">{group.memberCount} members · {group.frequency}</p>
+                  <p className="mt-1 text-sm font-bold text-[#526c57]">{formatCurrency(group.contributionAmount)} per cycle</p>
+                  {joinRequest && (
+                    <p className="mt-3 rounded-lg bg-[#f5f7f3] px-3 py-2 text-[10px] leading-5 text-[#68776c]">
+                      {joinRequest.status === 'pending' ? 'Request pending chairperson review.'
+                        : isApproved && !joinRequest.appliedAt ? `Approved. Account access starts in cycle ${joinRequest.effectiveCycle}.`
+                          : isApproved ? 'Your membership request was approved.'
+                            : `Request declined${joinRequest.reviewNote ? `: ${joinRequest.reviewNote}` : '.'}`}
+                    </p>
+                  )}
+                  {!accessToken ? (
+                    onCreateAccount ? (
+                      <button type="button" onClick={onCreateAccount} className="mt-4 h-10 w-full rounded-xl bg-[#20543b] text-xs font-bold text-white">Create account to request</button>
+                    ) : (
+                      <p className="mt-4 text-center text-[10px] text-[#87928a]">Sign in to request membership.</p>
+                    )
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={isPending || isApproved || submittingGroupId === group.id}
+                      onClick={() => void requestMembership(group)}
+                      className="mt-4 h-10 w-full rounded-xl bg-[#20543b] text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {submittingGroupId === group.id ? 'Sending…' : isPending ? 'Request pending' : isApproved ? 'Approved' : 'Request to join'}
+                    </button>
+                  )}
+                </article>
+              );
+            })}
+            {!loading && groups.length === 0 && <p className="col-span-full rounded-2xl border border-dashed border-[#dfe5dc] bg-white p-8 text-center text-xs text-[#89948c]">No active groups match this search.</p>}
+          </div>
+        )}
+        {nextCursor && <button type="button" disabled={loading} onClick={() => void loadMore()} className="mx-auto mt-5 block h-10 rounded-xl border border-[#dfe7dd] bg-white px-5 text-xs font-bold text-[#526c57] disabled:opacity-50">{loading ? 'Loading…' : 'Load more groups'}</button>}
+      </div>
+    </main>
+  );
+}
+
+function LandingPage({ onSignIn, onCreateAccount, onDemo, onBrowseGroups, notice }) {
   return (
     <main className="page-transition min-h-screen overflow-hidden bg-[#f6f7f2]">
       <header className="mx-auto flex max-w-7xl items-center justify-between gap-2 px-4 py-5 sm:px-8">
@@ -2396,6 +2672,9 @@ function LandingPage({ onSignIn, onCreateAccount, onDemo, notice }) {
             </button>
             <button type="button" onClick={onDemo} className="h-12 rounded-xl border border-[#dfe7dd] bg-white px-5 text-xs font-bold text-[#526c57] transition hover:bg-[#f9fbf7] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4b825d]">
               Explore the demo
+            </button>
+            <button type="button" onClick={onBrowseGroups} className="h-12 rounded-xl border border-[#dfe7dd] bg-white px-5 text-xs font-bold text-[#526c57] transition hover:bg-[#f9fbf7] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4b825d]">
+              Find a group
             </button>
           </div>
           <p className="mt-4 text-[10px] text-[#929c94]">Demo records are illustrative. Payment-provider transfers are not enabled.</p>
@@ -2467,11 +2746,14 @@ function LandingPage({ onSignIn, onCreateAccount, onDemo, notice }) {
   );
 }
 
-function AuthScreen({ onAuthenticate, onDemo, onBack, initialMode = 'login' }) {
+function AuthScreen({ onAuthenticate, onResendVerification, onDemo, onBack, initialMode = 'login' }) {
   const [mode, setMode] = useState(initialMode);
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [verificationEmail, setVerificationEmail] = useState('');
+  const [verificationMessage, setVerificationMessage] = useState('');
+  const [resending, setResending] = useState(false);
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -2480,11 +2762,36 @@ function AuthScreen({ onAuthenticate, onDemo, onBack, initialMode = 'login' }) {
     setFormError('');
     setSubmitting(true);
     try {
-      await onAuthenticate(mode, { fullName, email, password });
+      const result = await onAuthenticate(mode, { fullName, email, password });
+      if (result?.verificationRequired) {
+        setVerificationEmail(email.trim());
+        setVerificationMessage(result.message || 'Check your email for a verification link.');
+        setMode('verification');
+      }
     } catch (error) {
+      if (error.verificationRequired) {
+        setVerificationEmail(email.trim());
+        setVerificationMessage(error.message);
+        setMode('verification');
+        return;
+      }
       setFormError(error.message || 'Could not sign in. Please try again.');
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function resendVerification() {
+    setResending(true);
+    setFormError('');
+    setVerificationMessage('');
+    try {
+      const result = await onResendVerification(verificationEmail);
+      setVerificationMessage(result.message);
+    } catch (error) {
+      setFormError(error.message || 'Could not resend verification email.');
+    } finally {
+      setResending(false);
     }
   }
 
@@ -2495,17 +2802,20 @@ function AuthScreen({ onAuthenticate, onDemo, onBack, initialMode = 'login' }) {
         <button type="button" onClick={onBack} className="mt-5 text-[10px] font-bold text-[#4b825d] hover:underline">← Back to home</button>
         <div className="mt-8">
           <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#719079]">
-            {mode === 'login' ? 'Welcome back' : 'Get started'}
+            {mode === 'login' ? 'Welcome back' : mode === 'register' ? 'Get started' : 'Email verification'}
           </p>
           <h1 className="display-font mt-2 text-2xl font-extrabold tracking-tight text-[#24382b]">
-            {mode === 'login' ? 'Sign in to ChamaFlow' : 'Create your account'}
+            {mode === 'login' ? 'Sign in to ChamaFlow' : mode === 'register' ? 'Create your account' : 'Verify your email'}
           </h1>
           <p className="mt-2 text-sm leading-6 text-[#7c8980]">
             {mode === 'login'
               ? 'Continue managing your savings chamas.'
-              : 'Join your community and start saving together.'}
+              : mode === 'register'
+                ? 'Create your account, verify your email, then request to join your group.'
+                : `Verification instructions are for ${verificationEmail || email}.`}
           </p>
         </div>
+        {mode !== 'verification' && (
         <form onSubmit={submit} className="mt-6 space-y-4">
           {mode === 'register' && (
             <label className="block text-xs font-semibold text-[#526258]">
@@ -2558,6 +2868,15 @@ function AuthScreen({ onAuthenticate, onDemo, onBack, initialMode = 'login' }) {
             {submitting ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}
           </button>
         </form>
+        )}
+        {mode === 'verification' ? (
+          <div className="mt-6 space-y-3">
+            {verificationMessage && <p role="status" className="rounded-xl bg-[#edf4ee] px-3 py-3 text-xs leading-5 text-[#477352]">{verificationMessage}</p>}
+            {formError && <p role="alert" className="rounded-xl bg-[#fbefec] px-3 py-2 text-xs text-[#a65347]">{formError}</p>}
+            <button type="button" disabled={resending} onClick={() => void resendVerification()} className="h-11 w-full rounded-xl bg-[#20543b] text-xs font-bold text-white disabled:opacity-60">{resending ? 'Sending…' : 'Resend verification email'}</button>
+            <button type="button" onClick={() => { setMode('login'); setFormError(''); }} className="h-10 w-full rounded-xl border border-[#dfe7dd] text-xs font-bold text-[#526c57]">Back to sign in</button>
+          </div>
+        ) : (
         <p className="mt-5 text-center text-xs text-[#7c8980]">
           {mode === 'login' ? 'New to ChamaFlow?' : 'Already have an account?'}{' '}
           <button
@@ -2568,17 +2887,22 @@ function AuthScreen({ onAuthenticate, onDemo, onBack, initialMode = 'login' }) {
             {mode === 'login' ? 'Create an account' : 'Sign in'}
           </button>
         </p>
-        <div className="my-5 border-t border-[#edf0e9]" />
-        <button
-          type="button"
-          onClick={onDemo}
-          className="h-11 w-full rounded-xl border border-[#dfe7dd] text-xs font-bold text-[#526c57] transition hover:bg-[#f6f9f4]"
-        >
-          Continue with demo data
-        </button>
-        <p className="mt-3 text-center text-[10px] leading-5 text-[#929c94]">
-          Demo data stays in this browser session and is not saved to PostgreSQL.
-        </p>
+        )}
+        {mode !== 'verification' && (
+          <>
+            <div className="my-5 border-t border-[#edf0e9]" />
+            <button
+              type="button"
+              onClick={onDemo}
+              className="h-11 w-full rounded-xl border border-[#dfe7dd] text-xs font-bold text-[#526c57] transition hover:bg-[#f6f9f4]"
+            >
+              Continue with demo data
+            </button>
+            <p className="mt-3 text-center text-[10px] leading-5 text-[#929c94]">
+              Demo data stays in this browser session and is not saved to PostgreSQL.
+            </p>
+          </>
+        )}
       </section>
     </main>
   );
@@ -2599,11 +2923,16 @@ function App() {
   const [accessToken, setAccessToken] = useState(() => sessionStorage.getItem('chamaflowAccessToken'));
   const [authState, setAuthState] = useState('checking');
   const [authScreenOpen, setAuthScreenOpen] = useState(false);
+  const [publicDirectoryOpen, setPublicDirectoryOpen] = useState(false);
   const [authInitialMode, setAuthInitialMode] = useState('login');
   const [user, setUser] = useState(null);
   const [adminAccess, setAdminAccess] = useState({ platformAdmin: false, saccoAdmin: false, saccos: [] });
   const [adminRefreshKey, setAdminRefreshKey] = useState(0);
   const [landingNotice, setLandingNotice] = useState('');
+  const [verificationToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('verify') || '');
+  const [verificationResult, setVerificationResult] = useState(() => (
+    new URLSearchParams(window.location.hash.slice(1)).has('verify') ? { loading: true } : null
+  ));
   const [error, setError] = useState('');
   const [activePage, setActivePage] = useState('Overview');
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -2617,6 +2946,32 @@ function App() {
   const [period, setPeriod] = useState('This month');
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [liveRefreshError, setLiveRefreshError] = useState('');
+
+  useEffect(() => {
+    if (!verificationToken) return undefined;
+    const controller = new AbortController();
+    fetch(`${API_URL}/auth/verification/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: verificationToken }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Could not verify this email address.');
+        setVerificationResult({ success: true, message: payload.message });
+      })
+      .catch((verifyError) => {
+        if (verifyError.name !== 'AbortError') {
+          setVerificationResult({ success: false, message: verifyError.message || 'Could not verify this email address.' });
+        }
+      })
+      .finally(() => {
+        const cleanUrl = `${window.location.pathname}${window.location.search}`;
+        window.history.replaceState(null, '', cleanUrl);
+      });
+    return () => controller.abort();
+  }, [verificationToken]);
 
   async function loadAccountData(token, signal) {
     const headers = { Authorization: `Bearer ${token}` };
@@ -2637,7 +2992,7 @@ function App() {
       if (adminPayload.platformAdmin || adminPayload.saccoAdmin) {
         navigateToPage('Administration');
       } else {
-        setGroupModalOpen(true);
+        navigateToPage('Find a group');
       }
       setError('');
       return;
@@ -2825,7 +3180,12 @@ function App() {
       body: JSON.stringify(credentials),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || 'Could not authenticate.');
+    if (!response.ok) {
+      const error = new Error(payload.error || 'Could not authenticate.');
+      error.verificationRequired = payload.verificationRequired === true;
+      throw error;
+    }
+    if (payload.verificationRequired) return payload;
     sessionStorage.setItem('chamaflowAccessToken', payload.token);
     setAccessToken(payload.token);
     setUser(payload.user);
@@ -2843,6 +3203,16 @@ function App() {
     setAuthState('authenticated');
     setAuthScreenOpen(false);
   };
+  const resendVerification = async (email) => {
+    const response = await fetch(`${API_URL}/auth/verification/resend`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not resend verification email.');
+    return payload;
+  };
   const enterDemo = () => {
     setAccessToken(null);
     sessionStorage.removeItem('chamaflowAccessToken');
@@ -2859,10 +3229,11 @@ function App() {
     setLiveRefreshError('');
     setError('');
   };
-  const signOut = async () => {
-    let logoutNotice = '';
+  const signOut = async (notice = '') => {
+    const shouldSkipServerRevocation = typeof notice === 'string' && notice.length > 0;
+    let logoutNotice = shouldSkipServerRevocation ? notice : '';
     try {
-      if (accessToken) {
+      if (accessToken && !shouldSkipServerRevocation) {
         const response = await fetch(`${API_URL}/auth/logout`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${accessToken}` },
@@ -3123,6 +3494,21 @@ function App() {
   };
 
   if (authState === 'checking') {
+    if (verificationResult) {
+      return (
+        <main className="grid min-h-screen place-items-center bg-[#f6f7f2] px-4">
+          <section className="w-full max-w-md rounded-3xl border border-[#e9ece5] bg-white p-7 text-center shadow-sm">
+            <Brand />
+            <p className="mt-6 text-sm leading-6 text-[#526258]">{verificationResult.loading ? 'Verifying your email address…' : verificationResult.message}</p>
+            {!verificationResult.loading && (
+              <button type="button" onClick={() => { window.location.hash = ''; setVerificationResult(null); setAuthInitialMode('login'); setAuthScreenOpen(true); setAuthState('signedOut'); }} className="mt-5 h-11 w-full rounded-xl bg-[#20543b] text-xs font-bold text-white">
+                {verificationResult.success ? 'Continue to sign in' : 'Return to sign in'}
+              </button>
+            )}
+          </section>
+        </main>
+      );
+    }
     return (
       <div className="grid min-h-screen place-items-center bg-[#f6f7f2]">
         <p className="text-xs font-semibold text-[#819087]">Checking your session…</p>
@@ -3130,9 +3516,37 @@ function App() {
     );
   }
   if (authState === 'signedOut') {
+    if (verificationResult) {
+      return (
+        <main className="grid min-h-screen place-items-center bg-[#f6f7f2] px-4">
+          <section className="w-full max-w-md rounded-3xl border border-[#e9ece5] bg-white p-7 text-center shadow-sm">
+            <Brand />
+            <p className="mt-6 text-sm leading-6 text-[#526258]">{verificationResult.loading ? 'Verifying your email address…' : verificationResult.message}</p>
+            {!verificationResult.loading && (
+              <button type="button" onClick={() => { setVerificationResult(null); setAuthInitialMode('login'); setAuthScreenOpen(true); }} className="mt-5 h-11 w-full rounded-xl bg-[#20543b] text-xs font-bold text-white">
+                {verificationResult.success ? 'Continue to sign in' : 'Return to sign in'}
+              </button>
+            )}
+          </section>
+        </main>
+      );
+    }
+    if (publicDirectoryOpen) {
+      return (
+        <GroupDiscoveryPage
+          onBack={() => setPublicDirectoryOpen(false)}
+          onCreateAccount={() => {
+            setPublicDirectoryOpen(false);
+            setAuthInitialMode('register');
+            setAuthScreenOpen(true);
+          }}
+        />
+      );
+    }
     return authScreenOpen
       ? <AuthScreen
           onAuthenticate={authenticate}
+          onResendVerification={resendVerification}
           onDemo={enterDemo}
           onBack={() => setAuthScreenOpen(false)}
           initialMode={authInitialMode}
@@ -3142,6 +3556,7 @@ function App() {
           onSignIn={() => { setAuthInitialMode('login'); setAuthScreenOpen(true); }}
           onCreateAccount={() => { setAuthInitialMode('register'); setAuthScreenOpen(true); }}
           onDemo={enterDemo}
+          onBrowseGroups={() => setPublicDirectoryOpen(true)}
           notice={landingNotice}
         />
       );
@@ -3279,16 +3694,10 @@ function App() {
                 }}
               />
             </div>
+          ) : activePage === 'Find a group' ? (
+            <GroupDiscoveryPage accessToken={authState === 'authenticated' ? accessToken : null} />
           ) : !data && authState === 'authenticated' && groups.length === 0 ? (
-            <div className="grid min-h-[50vh] place-items-center">
-              <div className="max-w-sm text-center">
-                <h1 className="display-font text-xl font-extrabold text-[#24382b]">Create your first savings chama</h1>
-                <p className="mt-2 text-sm leading-6 text-[#7c8980]">Set up a chama to invite members and plan your contribution schedule.</p>
-                <button onClick={() => setGroupModalOpen(true)} className="mt-5 h-11 rounded-xl bg-[#20543b] px-5 text-xs font-bold text-white">
-                  Create a chama
-                </button>
-              </div>
-            </div>
+            <GroupDiscoveryPage accessToken={accessToken} />
           ) : !data ? (
             <div className="grid min-h-[50vh] place-items-center">
               <div className="text-center">
@@ -3350,9 +3759,9 @@ function App() {
                     searchTerm={searchTerm}
                   />
                 ) : activePage === 'My group' ? (
-                  <GroupPage data={data} contributions={contributions} searchTerm={searchTerm} userEmail={user?.email} onAddMember={addGroupMember} />
+                  <GroupPage data={data} contributions={contributions} searchTerm={searchTerm} userEmail={user?.email} accessToken={accessToken} onAddMember={addGroupMember} />
                 ) : (
-                  <GroupPage data={data} contributions={contributions} searchTerm={searchTerm} />
+                  <GroupPage data={data} contributions={contributions} searchTerm={searchTerm} userEmail={user?.email} accessToken={accessToken} onAddMember={addGroupMember} />
                 )}
               </div>
             </>
